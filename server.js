@@ -1,13 +1,32 @@
 const express = require('express');
-const WebSocket = require('ws');
-const app = express();
-const port = 3000;
+const { Server } = require('socket.io');
+const http = require('http');
+const morgan = require('morgan');
+require('dotenv').config();
+require('./src/utils/initDb');
+const cors = require('cors');
 
-// Crea un server WebSocket
-const wss = new WebSocket.Server({ noServer: true });
+const authRoutes = require('./src/routes/auth');
+const errorHandler = require('./src/middleware/errorHandler');
+const { pool } = require('./src/utils/db');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+app.use(cors());
+
+// Middleware
+app.use(morgan('combined'));
+app.use(express.json());
+
+// Routes
+app.use('/auth', authRoutes);
+
+// Error Handling Middleware
+app.use(errorHandler);
 
 // Gestisci le connessioni WebSocket
-wss.on('connection', (ws) => {
+io.on('connection', (ws) => {
   console.log('Client connected');
   
   // Ascolta i messaggi inviati dal client
@@ -27,7 +46,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Imposta il server Express per gestire le richieste HTTP (se necessario)
-app.server = app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
-});
+
