@@ -2,11 +2,6 @@ const { pool } = require('./db'); // Assicurati che il percorso sia corretto
 
 const initDb = async () => {
   try {
-    await pool.query(`
-     -- Elimina le tabelle se esistono
-DROP TABLE IF EXISTS users, questions, answers, game_results CASCADE;
-
-    `);
 
     await pool.query(`
 
