@@ -2,91 +2,48 @@ const { pool } = require('./db'); // Assicurati che il percorso sia corretto
 
 const initDb = async () => {
   try {
-    // Crea la tabella 'answers'
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS answers (
-        id SERIAL PRIMARY KEY,
-        question_id INTEGER NOT NULL,
-        answer_text VARCHAR(255) NOT NULL,
-        is_correct BOOLEAN DEFAULT FALSE
-      );
+     -- Elimina le tabelle se esistono
+DROP TABLE IF EXISTS users, questions, answers, game_results CASCADE;
+
     `);
 
-    // Crea la tabella 'game_results'
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS game_results (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        room_id INTEGER NOT NULL,
-        correct_answers_count INTEGER DEFAULT 0,
-        total_time FLOAT DEFAULT 0
-      );
-    `);
 
-    // Crea la tabella 'game_status'
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS game_status (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        room_id INTEGER NOT NULL,
-        status VARCHAR(50) DEFAULT 'waiting'
-      );
-    `);
+-- Creazione tabella 'users' per gestire le credenziali
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    firstname VARCHAR(50) NOT NULL,
+    lastname VARCHAR(50),
+    email VARCHAR(100) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-    // Crea la tabella 'questions'
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS questions (
-        id SERIAL PRIMARY KEY,
-        question_text VARCHAR(255) NOT NULL,
-        category VARCHAR(255),
-        difficulty VARCHAR(25)
-      );
-    `);
+-- Creazione tabella 'questions' per memorizzare le domande
+CREATE TABLE questions (
+    id SERIAL PRIMARY KEY,
+    question_text VARCHAR(255) NOT NULL,
+    category VARCHAR(255),
+    difficulty VARCHAR(25)
+);
 
-    // Crea la tabella 'rooms'
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS rooms (
-        id SERIAL PRIMARY KEY,
-        player1_id INTEGER NOT NULL,
-        player2_id INTEGER,
-        status VARCHAR(50) DEFAULT 'waiting',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        question_quantity INTEGER DEFAULT 10,
-        question_time INTEGER DEFAULT 10,
-        question_category VARCHAR(255) DEFAULT 'Tutte le categorie'
-      );
-    `);
+-- Creazione tabella 'answers' per memorizzare le risposte alle domande
+CREATE TABLE answers (
+    id SERIAL PRIMARY KEY,
+    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    answer_text VARCHAR(255) NOT NULL,
+    is_correct BOOLEAN DEFAULT FALSE
+);
 
-    // Crea la tabella 'room_questions'
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS room_questions (
-        id SERIAL PRIMARY KEY,
-        room_id INTEGER NOT NULL,
-        question_id INTEGER NOT NULL
-      );
-    `);
+-- Creazione tabella 'game_results' per memorizzare lo storico delle partite
+CREATE TABLE game_results (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    correct_answers_count INTEGER DEFAULT 0,
+    total_time FLOAT DEFAULT 0
+);
 
-    // Crea la tabella 'scores'
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS scores (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        score INTEGER DEFAULT 0
-      );
-    `);
-
-    // Crea la tabella 'user'
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        firstname VARCHAR(50) NOT NULL,
-        lastname VARCHAR(50),
-        email VARCHAR(100) NOT NULL UNIQUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        password VARCHAR(255) NOT NULL
-      );
     `);
 
     console.log('Database initialized successfully!');
