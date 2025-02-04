@@ -117,7 +117,7 @@ io.on('connection', (socket) => {
               auth: result.rows[0].auth_key,
           }}
           console.log('Push notification sent', x);
-          sendPushNotification(x, 'Nuovo Messaggio', 'test');
+          sendPushNotification(x, 'Nuovo Messaggio', 'richiesta di amicizia');
           console.log('Push notification sent');
         } else {
           console.log('No subscription found for the friend');
