@@ -35,7 +35,7 @@ app.use('/auth', authRoutes);
 app.use(errorHandler);
 
 // Gestisci le connessioni WebSocket
-io.on('connection', (ws) => {
+io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   socket.on('userLoggedIn', (userId) => {
@@ -88,7 +88,7 @@ io.on('connection', (ws) => {
     console.log('User disconnected');
   });
 
-  ws.on('message', (message) => {
+  socket.on('message', (message) => {
       console.log('Received:', message);
 
       // Invia una notifica Web Push a tutti gli iscritti
@@ -124,3 +124,9 @@ function sendPushNotification(subscription, title, body) {
       .then(() => console.log('Notifica inviata!'))
       .catch(err => console.error('Errore:', err));
 }
+
+// Start Server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
