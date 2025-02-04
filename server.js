@@ -34,6 +34,8 @@ app.use('/auth', authRoutes);
 // Error Handling Middleware
 app.use(errorHandler);
 
+let users = {};
+
 // Gestisci le connessioni WebSocket
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
@@ -83,34 +85,80 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('roomUpdated', rooms[roomId]);
   });
 
+  socket.on('notification', async (friendId) => {
+  
+    // Controlla se l'amico è online tramite WebSocket
+    if (users[friendId]) {
+      const friendSocketId = users[data.friendId];  // Ottieni socket ID dell'amico
+      console.log(`Sending notification to user ${friendId} with socket ID ${friendSocketId}`);
+  
+      // Invia la notifica tramite WebSocket
+      io.to(friendSocketId).emit('notification', {
+        message: `Hai ricevuto un messaggio: ${message}`,
+      });
+  
+      console.log('Notification sent via WebSocket');
+    } else {
+      console.log('Friend is offline, attempting to send push notification');
+  
+      // Se l'amico è offline, invia una notifica push
+      try {
+        console.log('Friend is offline, attempting to send push notification', friendId, users[friendId]);
+        const result = await pool.query(
+          'SELECT * FROM subscriptions WHERE user_id = $1',
+          [friendId]
+        );
+  
+        if (result.rowCount > 0) {
+          console.log('Push notification sent',result.rows[0]);
+          const x = {endpoint: result.rows[0].endpoint,
+          keys: {
+              p256dh: result.rows[0].p256dh_key,
+              auth: result.rows[0].auth_key,
+          }}
+          console.log('Push notification sent', x);
+          sendPushNotification(x, 'Nuovo Messaggio', 'test');
+          console.log('Push notification sent');
+        } else {
+          console.log('No subscription found for the friend');
+        }
+      } catch (err) {
+        console.error('Error sending push notification:', err);
+      }
+    }
+  });
+
   // Disconnect
   socket.on('disconnect', () => {
     console.log('User disconnected');
   });
 
-  socket.on('message', (message) => {
-      console.log('Received:', message);
-
-      // Invia una notifica Web Push a tutti gli iscritti
-      subscriptions.forEach(subscription => {
-          sendPushNotification(subscription, 'Nuovo Messaggio', `Hai ricevuto: ${message}`);
-      });
-  });
-
 });
 
 
-// Sottoscrizione delle notifiche
 app.post('/subscribe', async (req, res) => {
   const { subscription, userId } = req.body;
 
   try {
-    // Salva la sottoscrizione nel database
+    const { endpoint, expirationTime, keys } = subscription;
+    const { p256dh, auth } = keys;
+
+    // Upsert: inserisce o aggiorna la sottoscrizione nel database
     const result = await pool.query(
-      'INSERT INTO subscriptions (user_id, subscription) VALUES ($1, $2) RETURNING *',
-      [userId, JSON.stringify(subscription)]
+      `INSERT INTO subscriptions (user_id, endpoint, expiration_time, p256dh_key, auth_key)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (user_id) 
+      DO UPDATE
+      SET
+        endpoint = EXCLUDED.endpoint,
+        expiration_time = EXCLUDED.expiration_time,
+        p256dh_key = EXCLUDED.p256dh_key,
+        auth_key = EXCLUDED.auth_key
+      RETURNING *`,
+      [userId, endpoint, expirationTime, p256dh, auth]
     );
-    res.status(201).json({ message: 'Sottoscrizione salvata', subscription: result.rows[0] });
+
+    res.status(201).json({ message: 'Sottoscrizione salvata o aggiornata', subscription: result.rows[0] });
   } catch (err) {
     res.status(500).json({ message: 'Errore nel salvare la sottoscrizione', error: err.message });
   }
