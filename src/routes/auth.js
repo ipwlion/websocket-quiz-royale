@@ -27,8 +27,8 @@ router.post('/register', async (req, res, next) => {
 
     // Inserimento nel database
     await pool.query(
-      'INSERT INTO users (username, password, status) VALUES ($1, $2, $3)',
-      [username, hashedPassword, 'offline']
+      'INSERT INTO users (username, password) VALUES ($1, $2)',
+      [username, hashedPassword]
     );
 
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
@@ -73,12 +73,11 @@ router.post('/login', async (req, res, next) => {
     //   { expiresIn: '1h' }
     // );
 
-    res.status(200).json({
-      message: 'Login successful!',
-      user,
-    });
+    io.emit('userLoggedIn', user.id);  // Puoi inviare un evento per informare tutti i client
+
+    res.status(200).json({ message: 'Login successful!', user });
   } catch (err) {
-    next(err);
+    res.status(500).json({ error: 'Something went wrong' });
   }
 });
 
