@@ -20,13 +20,7 @@ webpush.setVapidDetails(
   'u39L4Ib9MM9sfw9pfBnTPYhdIxdHzq13P_LYI1hWYBA'
 );
 
-const corsOptions = {
-  origin: '*', // Sostituisci con il tuo dominio frontend
-  methods: ['POST', 'GET'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-};
-router.use(cors(corsOptions)); // Configura CORS solo per queste rotte
-
+app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json());
 app.use('/auth', authRoutes);
