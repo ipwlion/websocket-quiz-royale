@@ -72,11 +72,9 @@ router.post('/login', async (req, res, next) => {
     //   process.env.JWT_SECRET,
     //   { expiresIn: '1h' }
     // );
-
-    io.emit('userLoggedIn', user.id);  // Puoi inviare un evento per informare tutti i client
-
     res.status(200).json({ message: 'Login successful!', user });
   } catch (err) {
+    console.log(err)
     res.status(500).json({ error: 'Something went wrong' });
   }
 });

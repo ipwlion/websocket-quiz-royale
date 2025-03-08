@@ -16,6 +16,16 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   subscription JSONB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS game_results (
+    id SERIAL PRIMARY KEY,
+    room_id VARCHAR(255),
+    user_id VARCHAR(255),
+    correct_answers INT,
+    total_time INT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+
     `);
 
     console.log('Database initialized successfully!');
