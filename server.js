@@ -167,7 +167,7 @@ io.on('connection', (socket) => {
 
     socket.on('getRooms', () => {
         // Respond with the list of rooms
-        socket.emit('roomsData', rooms);  // Send rooms data back to the client
+        socket.emit('roomsData', rooms.filter(room => room.status !== 'started'));  // Send rooms data back to the client
     });
 
     socket.on('findOpponent', (userId) => {
