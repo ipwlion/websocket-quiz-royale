@@ -139,22 +139,57 @@ io.on('connection', (socket) => {
 
 
     socket.on('notification', async (friendId) => {
-        if (io.to(users.find(u => u.userId === friendId))) {
-            io.to(users.find(u => u.userId === friendId)?.socketId).emit('notification', { message: 'Nuovo messaggio ricevuto' });
+  
+        // Trova l'utente nell'array `users`
+        const friend = users.find(u => u.userId === friendId);
+      
+        if (friend) {
+          const friendSocketId = friend.socketId; // Ottieni socket ID corretto
+          console.log(`Sending notification to user ${friendId} with socket ID ${friendSocketId}`);
+      
+          // Invia la notifica tramite WebSocket
+          io.to(friendSocketId).emit('notification', {
+            message: `Hai ricevuto un messaggio`,
+          });
+      
+          console.log('Notification sent via WebSocket');
         } else {
-            try {
-                const result = await pool.query('SELECT * FROM subscriptions WHERE user_id = $1', [friendId]);
-                if (result.rowCount > 0) {
-                    const sub = result.rows[0];
-                    const subscription = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } };
-                    sendPushNotification(subscription, 'Nuovo Messaggio', 'Hai una nuova notifica!');
-                }
-            } catch (err) {
-                console.error('Error sending push notification:', err);
+          console.log('Friend is offline, attempting to send push notification');
+      
+          // Se l'amico è offline, invia una notifica push
+          try {
+            const result = await pool.query(
+              `SELECT 
+                 subscription->>'endpoint' AS endpoint, 
+                 subscription->'keys'->>'p256dh' AS p256dh_key, 
+                 subscription->'keys'->>'auth' AS auth_key 
+               FROM subscriptions 
+               WHERE user_id = $1`,
+              [friendId]
+            );
+      
+            if (result.rowCount > 0) {
+              const sub = result.rows[0];
+              const subscription = {
+                endpoint: sub.endpoint,
+                keys: {
+                  p256dh: sub.p256dh_key,
+                  auth: sub.auth_key,
+                },
+              };
+      
+              console.log('Push notification data:', subscription);
+              sendPushNotification(subscription, 'Nuovo Messaggio', 'richiesta di amicizia');
+              console.log('Push notification sent');
+            } else {
+              console.log('No subscription found for the friend');
             }
+          } catch (err) {
+            console.error('Error sending push notification:', err);
+          }
         }
-    });
-
+      });
+      
     socket.on('exit', ({ userId, id }) => {
         rooms.forEach(room => {
             if (room.id === id) {
