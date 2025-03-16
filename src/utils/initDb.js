@@ -41,8 +41,6 @@ CREATE TABLE IF NOT EXISTS friends (
   created_at TIMESTAMP DEFAULT NOW(),
   UNIQUE (user_id1, user_id2)
 );
-ALTER TABLE subscriptions ADD CONSTRAINT unique_user_subscription UNIQUE (user_id);
-
 
     `);
 

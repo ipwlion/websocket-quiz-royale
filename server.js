@@ -116,14 +116,18 @@ io.on('connection', (socket) => {
             // Notifica il destinatario se è online
             const receiver = users.find(u => u.userId === receiverId);
             if (receiver) {
+                console.log(`📩 [SERVER] Nuova richiesta di amicizia inviata a ${receiverId}`);
                 io.to(receiver.socketId).emit('newFriendRequest', { senderId });
             }
+            
+            // ✅ Invio della notifica anche all'utente che ha inviato la richiesta
+            io.to(socket.id).emit('friendRequestSent', { receiverId });
+    
         } catch (err) {
-            console.error('Errore nell\'invio della richiesta di amicizia:', err);
+            console.error('❌ Errore nell\'invio della richiesta di amicizia:', err);
         }
     });
-    
-    // Accettare una richiesta di amicizia
+
     socket.on('acceptFriendRequest', async ({ senderId, receiverId }) => {
         try {
             await pool.query(
@@ -138,16 +142,42 @@ io.on('connection', (socket) => {
     
             // Notifica entrambi gli utenti
             const sender = users.find(u => u.userId === senderId);
+            const receiver = users.find(u => u.userId === receiverId);
+            
             if (sender) {
                 io.to(sender.socketId).emit('friendRequestAccepted', { receiverId });
             }
-            io.to(socket.id).emit('friendAdded', { friendId: senderId });
+            if (receiver) {
+                io.to(receiver.socketId).emit('friendAdded', { friendId: senderId });
+            }
+    
+            console.log(`✅ [SERVER] Amicizia confermata tra ${senderId} e ${receiverId}`);
+    
         } catch (err) {
-            console.error('Errore nell\'accettare la richiesta:', err);
+            console.error('❌ Errore nell\'accettare la richiesta:', err);
         }
     });
+
+    socket.on('getFriendsList', async ({ userId }) => {
+        try {
+            const friends = await pool.query(
+                `SELECT u.id, u.username FROM friends 
+                 JOIN users u ON 
+                     (friends.user_id1 = u.id OR friends.user_id2 = u.id)
+                 WHERE 
+                     (friends.user_id1 = $1 OR friends.user_id2 = $1)
+                     AND u.id != $1`, // ✅ Esclude l'utente stesso dalla lista
+                [userId]
+            );
     
-    // Rifiutare una richiesta di amicizia
+            console.log(`✅ [SERVER] Lista amici aggiornata per ${userId}:`, friends.rows);
+            io.to(socket.id).emit('friendsList', friends.rows);
+    
+        } catch (err) {
+            console.error('❌ Errore nel recuperare la lista amici:', err);
+        }
+    });
+
     socket.on('rejectFriendRequest', async ({ senderId, receiverId }) => {
         try {
             await pool.query(
@@ -157,34 +187,34 @@ io.on('connection', (socket) => {
     
             const sender = users.find(u => u.userId === senderId);
             if (sender) {
+                console.log(`❌ [SERVER] Richiesta di amicizia rifiutata tra ${senderId} e ${receiverId}`);
                 io.to(sender.socketId).emit('friendRequestRejected', { receiverId });
             }
+    
         } catch (err) {
-            console.error('Errore nel rifiutare la richiesta:', err);
+            console.error('❌ Errore nel rifiutare la richiesta:', err);
         }
     });
-    
-    // Recuperare la lista amici
-    socket.on('getFriendsList', async ({ userId }) => {
+
+    socket.on('getFriendRequests', async ({ userId }) => {
         try {
-            const friends = await pool.query(
-                `SELECT u.id, u.username FROM friends 
-                 JOIN users u ON 
-                     (friends.user_id1 = u.id OR friends.user_id2 = u.id)
-                 WHERE 
-                     (friends.user_id1 = $1 OR friends.user_id2 = $1)
-                     AND u.id != $1`,
+            console.log(`📨 [SERVER] Recupero richieste di amicizia per l'utente ${userId}`);
+    
+            const requests = await pool.query(
+                `SELECT u.id, u.username FROM friend_requests fr
+                 JOIN users u ON fr.sender_id = u.id
+                 WHERE fr.sender_id != $1 AND fr.status = 'pending'`,
                 [userId]
             );
     
-            io.to(socket.id).emit('friendsList', friends.rows);
+            console.log(`✅ [SERVER] Trovate ${requests.rowCount} richieste di amicizia per ${userId}`);
+            io.to(socket.id).emit('friendRequests', requests.rows);
+    
         } catch (err) {
-            console.error('Errore nel recuperare la lista amici:', err);
+            console.error('❌ Errore nel recupero delle richieste di amicizia:', err);
         }
     });
     
-    
-    // Rimuovere un amico
     socket.on('removeFriend', async ({ userId, friendId }) => {
         try {
             await pool.query(
@@ -201,27 +231,6 @@ io.on('connection', (socket) => {
             console.error('Errore nel rimuovere l\'amico:', err);
         }
     });
-    
-
-    socket.on('getFriendRequests', async ({ userId }) => {
-        try {
-            console.log(`📨 Recupero richieste di amicizia per l'utente ${userId}`);
-    
-            const requests = await pool.query(
-                `SELECT u.id, u.username FROM friend_requests fr
-                 JOIN users u ON fr.sender_id = u.id
-                 WHERE fr.receiver_id = $1 AND fr.status = 'pending'`,
-                [userId]
-            );
-    
-            console.log(`✅ Trovate ${requests.rowCount} richieste di amicizia per ${userId}`);
-    
-            io.to(socket.id).emit('friendRequests', requests.rows);
-        } catch (err) {
-            console.error('❌ Errore nel recupero delle richieste di amicizia:', err);
-        }
-    });
-    
 
     socket.on('sendMessage', ({ userId, roomId, message }) => {
         const room = rooms.find(r => r.id === roomId);
@@ -251,9 +260,9 @@ io.on('connection', (socket) => {
             try {
                 // Salva il risultato nel database
                 await pool.query(
-                    `INSERT INTO game_results (room_id, user_id, correct_answers, total_time, created_at)
-                 VALUES ($1, $2, $3, $4, $5, NOW())`,
-                    [roomId, userId, correctAnswersCount, totalTime]
+                    `INSERT INTO game_results (room_id, user_id, correct_answers, total_time)
+                     VALUES ($1, $2, $3, $4)`,
+                    [roomId, userId, correctAnswersCount, totalTime] // ✅ Ora il numero di valori è corretto
                 );
 
                 console.log(`Risultato salvato nel DB per ${userId} nella stanza ${roomId}`);
