@@ -169,8 +169,11 @@ io.on('connection', (socket) => {
         try {
             const friends = await pool.query(
                 `SELECT u.id, u.username FROM friends 
-                 JOIN users u ON (friends.user_id1 = u.id OR friends.user_id2 = u.id)
-                 WHERE (friends.user_id1 = $1 OR friends.user_id2 = $1)`,
+                 JOIN users u ON 
+                     (friends.user_id1 = u.id OR friends.user_id2 = u.id)
+                 WHERE 
+                     (friends.user_id1 = $1 OR friends.user_id2 = $1)
+                     AND u.id != $1`,
                 [userId]
             );
     
@@ -179,6 +182,7 @@ io.on('connection', (socket) => {
             console.error('Errore nel recuperare la lista amici:', err);
         }
     });
+    
     
     // Rimuovere un amico
     socket.on('removeFriend', async ({ userId, friendId }) => {
