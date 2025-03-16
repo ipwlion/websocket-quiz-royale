@@ -74,6 +74,131 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('getProfile', async ({ userId }) => {
+        try {
+            const user = await pool.query(
+                `SELECT id, username FROM users WHERE id = $1`,
+                [userId]
+            );
+    
+            if (user.rowCount > 0) {
+                io.to(socket.id).emit('profileData', user.rows[0]);
+            } else {
+                io.to(socket.id).emit('profileError', { message: "Utente non trovato" });
+            }
+        } catch (err) {
+            console.error('Errore nel recuperare il profilo:', err);
+            io.to(socket.id).emit('profileError', { message: "Errore nel recupero profilo" });
+        }
+    });
+    
+
+
+    socket.on('sendFriendRequest', async ({ senderId, receiverId }) => {
+        try {
+            // Controlla se la richiesta già esiste
+            const existingRequest = await pool.query(
+                `SELECT * FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`, 
+                [senderId, receiverId]
+            );
+    
+            if (existingRequest.rowCount > 0) {
+                io.to(socket.id).emit('friendRequestAlreadySent', { receiverId });
+                return;
+            }
+    
+            // Inserisci la richiesta di amicizia
+            await pool.query(
+                `INSERT INTO friend_requests (sender_id, receiver_id, status) VALUES ($1, $2, 'pending')`,
+                [senderId, receiverId]
+            );
+    
+            // Notifica il destinatario se è online
+            const receiver = users.find(u => u.userId === receiverId);
+            if (receiver) {
+                io.to(receiver.socketId).emit('newFriendRequest', { senderId });
+            }
+        } catch (err) {
+            console.error('Errore nell\'invio della richiesta di amicizia:', err);
+        }
+    });
+    
+    // Accettare una richiesta di amicizia
+    socket.on('acceptFriendRequest', async ({ senderId, receiverId }) => {
+        try {
+            await pool.query(
+                `UPDATE friend_requests SET status = 'accepted' WHERE sender_id = $1 AND receiver_id = $2`,
+                [senderId, receiverId]
+            );
+    
+            await pool.query(
+                `INSERT INTO friends (user_id1, user_id2) VALUES ($1, $2)`,
+                [senderId, receiverId]
+            );
+    
+            // Notifica entrambi gli utenti
+            const sender = users.find(u => u.userId === senderId);
+            if (sender) {
+                io.to(sender.socketId).emit('friendRequestAccepted', { receiverId });
+            }
+            io.to(socket.id).emit('friendAdded', { friendId: senderId });
+        } catch (err) {
+            console.error('Errore nell\'accettare la richiesta:', err);
+        }
+    });
+    
+    // Rifiutare una richiesta di amicizia
+    socket.on('rejectFriendRequest', async ({ senderId, receiverId }) => {
+        try {
+            await pool.query(
+                `DELETE FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`,
+                [senderId, receiverId]
+            );
+    
+            const sender = users.find(u => u.userId === senderId);
+            if (sender) {
+                io.to(sender.socketId).emit('friendRequestRejected', { receiverId });
+            }
+        } catch (err) {
+            console.error('Errore nel rifiutare la richiesta:', err);
+        }
+    });
+    
+    // Recuperare la lista amici
+    socket.on('getFriendsList', async ({ userId }) => {
+        try {
+            const friends = await pool.query(
+                `SELECT u.id, u.username FROM friends 
+                 JOIN users u ON (friends.user_id1 = u.id OR friends.user_id2 = u.id)
+                 WHERE (friends.user_id1 = $1 OR friends.user_id2 = $1)`,
+                [userId]
+            );
+    
+            io.to(socket.id).emit('friendsList', friends.rows);
+        } catch (err) {
+            console.error('Errore nel recuperare la lista amici:', err);
+        }
+    });
+    
+    // Rimuovere un amico
+    socket.on('removeFriend', async ({ userId, friendId }) => {
+        try {
+            await pool.query(
+                `DELETE FROM friends WHERE (user_id1 = $1 AND user_id2 = $2) OR (user_id1 = $2 AND user_id2 = $1)`,
+                [userId, friendId]
+            );
+    
+            const friend = users.find(u => u.userId === friendId);
+            if (friend) {
+                io.to(friend.socketId).emit('friendRemoved', { userId });
+            }
+            io.to(socket.id).emit('friendRemoved', { friendId });
+        } catch (err) {
+            console.error('Errore nel rimuovere l\'amico:', err);
+        }
+    });
+    
+
     socket.on('sendMessage', ({ userId, roomId, message }) => {
         const room = rooms.find(r => r.id === roomId);
         if (room) {
@@ -281,17 +406,17 @@ app.post('/subscribe', async (req, res) => {
     const { subscription, userId } = req.body;
     try {
         await pool.query(
-            `INSERT INTO subscriptions (user_id, endpoint, expiration_time, p256dh_key, auth_key)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (user_id) DO UPDATE SET endpoint = EXCLUDED.endpoint,
-       expiration_time = EXCLUDED.expiration_time, p256dh_key = EXCLUDED.p256dh_key, auth_key = EXCLUDED.auth_key`,
-            [userId, subscription.endpoint, subscription.expirationTime, subscription.keys.p256dh, subscription.keys.auth]
+            `INSERT INTO subscriptions (user_id, subscription)
+             VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET subscription = EXCLUDED.subscription`,
+            [userId, JSON.stringify(subscription)]
         );
         res.status(201).json({ message: 'Sottoscrizione aggiornata' });
     } catch (err) {
         res.status(500).json({ message: 'Errore nel salvataggio', error: err.message });
     }
 });
+
 
 function sendPushNotification(subscription, title, body) {
     webpush.sendNotification(subscription, JSON.stringify({ title, body }))

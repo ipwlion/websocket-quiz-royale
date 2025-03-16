@@ -25,6 +25,24 @@ CREATE TABLE IF NOT EXISTS game_results (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS friend_requests (
+  id SERIAL PRIMARY KEY,
+  sender_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  receiver_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  status VARCHAR(20) CHECK (status IN ('pending', 'accepted', 'rejected')) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE (sender_id, receiver_id)
+);
+
+CREATE TABLE IF NOT EXISTS friends (
+  id SERIAL PRIMARY KEY,
+  user_id1 INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  user_id2 INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE (user_id1, user_id2)
+);
+ALTER TABLE subscriptions ADD CONSTRAINT unique_user_subscription UNIQUE (user_id);
+
 
     `);
 
