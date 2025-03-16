@@ -199,6 +199,26 @@ io.on('connection', (socket) => {
     });
     
 
+    socket.on('getFriendRequests', async ({ userId }) => {
+        try {
+            console.log(`📨 Recupero richieste di amicizia per l'utente ${userId}`);
+    
+            const requests = await pool.query(
+                `SELECT u.id, u.username FROM friend_requests fr
+                 JOIN users u ON fr.sender_id = u.id
+                 WHERE fr.receiver_id = $1 AND fr.status = 'pending'`,
+                [userId]
+            );
+    
+            console.log(`✅ Trovate ${requests.rowCount} richieste di amicizia per ${userId}`);
+    
+            io.to(socket.id).emit('friendRequests', requests.rows);
+        } catch (err) {
+            console.error('❌ Errore nel recupero delle richieste di amicizia:', err);
+        }
+    });
+    
+
     socket.on('sendMessage', ({ userId, roomId, message }) => {
         const room = rooms.find(r => r.id === roomId);
         if (room) {
