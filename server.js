@@ -27,6 +27,10 @@ app.use(errorHandler);
 
 let users = [];
 let rooms = [];
+const rankedQueue = []; // Coda per il matchmaking Ranked
+
+const PING_INTERVAL = 10000; // Tempo tra un ping e l'altro (10 sec)
+const PING_TIMEOUT = 15000; // Timeout per considerare il client disconnesso (15 sec)
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
@@ -42,22 +46,146 @@ io.on('connection', (socket) => {
         }
 
         // Aggiunge il nuovo socketId
-        users.push({ userId: userId.userId, socketId: socket.id });
+        users.push({ userId: userId.userId, socketId: socket.id, lastPing: Date.now() });
         console.log(`User ${userId.userId} associato al socket ${socket.id}`);
     });
 
+    socket.on('pong', () => {
+        const user = users.find(u => u.socketId === socket.id);
+        if (user) {
+            user.lastPing = Date.now();
+        }
+    });
+
+    setInterval(() => {
+        const now = Date.now();
+
+        users.forEach((user) => {
+            if (now - user.lastPing > PING_TIMEOUT) {
+                console.log(`🚫 Utente ${user.socketId} considerato disconnesso (timeout ping)`);
+
+
+                // Simuliamo la disconnessione forzata per aggiornare le stanze
+                handleUserDisconnect(user.socketId);
+            } else {
+                io.to(user.socketId).emit('ping'); // Invia un ping al client
+            }
+        });
+    }, PING_INTERVAL);
+
+
+    
+
+    // socket.on('findRankedMatch', async ({ userId }) => {
+    //     try {
+    //         const userRankQuery = await pool.query(`SELECT rank FROM users WHERE id = $1`, [userId]);
+    //         if (userRankQuery.rowCount === 0) return;
+    
+    //         const userRank = userRankQuery.rows[0].rank;
+    //         console.log(`🔍 [Ranked] Utente ${userId} (Rank ${userRank}) cerca un avversario...`);
+    
+    //         let opponentIndex = rankedQueue.findIndex(player => 
+    //             Math.abs(player.rank - userRank) <= 200
+    //         );
+    
+    //         if (opponentIndex !== -1) {
+    //             const opponent = rankedQueue.splice(opponentIndex, 1)[0];
+    
+    //             console.log(`✅ [Ranked] Match trovato: ${userId} vs ${opponent.userId}`);
+    
+    //             // Generiamo parametri casuali per la partita
+    //             const rankedGame = {
+    //                 id: `ranked_${Date.now()}`,
+    //                 players: [
+    //                     { playerId: userId, rank: userRank },
+    //                     { playerId: opponent.userId, rank: opponent.rank }
+    //                 ],
+    //                 settings: {
+    //                     questionCount: [5, 10, 15][Math.floor(Math.random() * 3)], // Numero domande casuale
+    //                     timePerQuestion: [10, 15, 20][Math.floor(Math.random() * 3)], // Tempo per domanda casuale
+    //                     category: "Random" // Tutte le categorie
+    //                 }
+    //             };
+    
+    //             io.to(users.find(u => u.userId === userId)?.socketId).emit('rankedMatchFound', rankedGame);
+    //             io.to(users.find(u => u.userId === opponent.userId)?.socketId).emit('rankedMatchFound', rankedGame);
+    
+    //         } else {
+    //             console.log(`⏳ [Ranked] Utente ${userId} in coda...`);
+    //             rankedQueue.push({ userId, rank: userRank });
+    
+    //             setTimeout(() => {
+    //                 const wideningIndex = rankedQueue.findIndex(player => player.userId === userId);
+    //                 if (wideningIndex !== -1) {
+    //                     console.log(`🔄 [Ranked] Espandiamo la ricerca per ${userId}...`);
+    //                     rankedQueue[wideningIndex].rank -= 200;
+    //                     rankedQueue[wideningIndex].rank += 200;
+    //                 }
+    //             }, 10000);
+    //         }
+    
+    //     } catch (err) {
+    //         console.error('❌ Errore nel matchmaking ranked:', err);
+    //     }
+    // });
+    
+    // socket.on('rankedGameFinished', async ({ gameId, results }) => {
+    //     try {
+    //         console.log(`🏆 [Ranked] Calcolo vincitore per la partita ${gameId}`);
+    
+    //         const [player1, player2] = results;
+    
+    //         let winnerId, loserId;
+    //         if (player1.correctAnswersCount > player2.correctAnswersCount) {
+    //             winnerId = player1.userId;
+    //             loserId = player2.userId;
+    //         } else if (player1.correctAnswersCount < player2.correctAnswersCount) {
+    //             winnerId = player2.userId;
+    //             loserId = player1.userId;
+    //         } else {
+    //             // In caso di pareggio, vince chi ha risposto più velocemente
+    //             winnerId = player1.totalTime < player2.totalTime ? player1.userId : player2.userId;
+    //             loserId = player1.totalTime < player2.totalTime ? player2.userId : player1.userId;
+    //         }
+    
+    //         console.log(`✅ Vincitore: ${winnerId}, Perdente: ${loserId}`);
+    
+    //         // 📝 Salva la partita nel database
+    //         await pool.query(`
+    //             INSERT INTO ranked_matches (game_id, player1_id, player2_id, player1_score, player2_score, player1_time, player2_time, winner_id)
+    //             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    //             [gameId, player1.userId, player2.userId, player1.correctAnswersCount, player2.correctAnswersCount, player1.totalTime, player2.totalTime, winnerId]
+    //         );
+    
+    //         console.log(`✅ Partita ranked ${gameId} salvata nel database.`);
+    
+    //         // 📊 Aggiornamento del ranking
+    //         await pool.query(`UPDATE users SET rank = rank + 20 WHERE id = $1`, [winnerId]);
+    //         await pool.query(`UPDATE users SET rank = rank - 10 WHERE id = $1`, [loserId]);
+    
+    //         // 📢 Notifica i giocatori
+    //         io.to(users.find(u => u.userId === winnerId)?.socketId).emit('rankedMatchResult', { result: 'win', winnerId });
+    //         io.to(users.find(u => u.userId === loserId)?.socketId).emit('rankedMatchResult', { result: 'lose', loserId });
+    
+    //     } catch (err) {
+    //         console.error('❌ Errore aggiornamento ranking:', err);
+    //     }
+    // });
+    
+    
 
     socket.on('createRoom', ({ userId, userName }) => {
         const roomId = `room_${Date.now()}`;
-        const newRoom = { id: roomId, players: [{ playerId: userId, playerName: userName, isCreator: true }], status: 'waiting' };
+
+        const newRoom = {
+            id: roomId,
+            name: roomId,  // ✅ Nome iniziale uguale all'ID
+            players: [{ playerId: userId, playerName: userName, isCreator: true }],
+            status: 'waiting'
+        };
+
         rooms.push(newRoom);
         io.to(socket.id).emit('roomCreated', newRoom);
-    });
-
-    socket.on('deleteRoom', ({ id }) => {
-        console.log('room deleted', id);
-        rooms = rooms.filter(r => r.id !== id);
-        io.to(socket.id).emit('roomDeleted', 'OK');
     });
 
     socket.on('joinRoom', ({ userId, userName, roomId }) => {
@@ -80,7 +208,7 @@ io.on('connection', (socket) => {
                 `SELECT id, username FROM users WHERE id = $1`,
                 [userId]
             );
-    
+
             if (user.rowCount > 0) {
                 io.to(socket.id).emit('profileData', user.rows[0]);
             } else {
@@ -91,38 +219,38 @@ io.on('connection', (socket) => {
             io.to(socket.id).emit('profileError', { message: "Errore nel recupero profilo" });
         }
     });
-    
+
 
 
     socket.on('sendFriendRequest', async ({ senderId, receiverId }) => {
         try {
             // Controlla se la richiesta già esiste
             const existingRequest = await pool.query(
-                `SELECT * FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`, 
+                `SELECT * FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`,
                 [senderId, receiverId]
             );
-    
+
             if (existingRequest.rowCount > 0) {
                 io.to(socket.id).emit('friendRequestAlreadySent', { receiverId });
                 return;
             }
-    
+
             // Inserisci la richiesta di amicizia
             await pool.query(
                 `INSERT INTO friend_requests (sender_id, receiver_id, status) VALUES ($1, $2, 'pending')`,
                 [senderId, receiverId]
             );
-    
+
             // Notifica il destinatario se è online
             const receiver = users.find(u => u.userId === receiverId);
             if (receiver) {
                 console.log(`📩 [SERVER] Nuova richiesta di amicizia inviata a ${receiverId}`);
                 io.to(receiver.socketId).emit('newFriendRequest', { senderId });
             }
-            
+
             // ✅ Invio della notifica anche all'utente che ha inviato la richiesta
             io.to(socket.id).emit('friendRequestSent', { receiverId });
-    
+
         } catch (err) {
             console.error('❌ Errore nell\'invio della richiesta di amicizia:', err);
         }
@@ -134,49 +262,66 @@ io.on('connection', (socket) => {
                 `UPDATE friend_requests SET status = 'accepted' WHERE sender_id = $1 AND receiver_id = $2`,
                 [senderId, receiverId]
             );
-    
+
             await pool.query(
                 `INSERT INTO friends (user_id1, user_id2) VALUES ($1, $2)`,
                 [senderId, receiverId]
             );
-    
-            // Notifica entrambi gli utenti
+
+            console.log(`✅ [SERVER] Amicizia confermata tra ${senderId} e ${receiverId}`);
+
+            // Troviamo entrambi gli utenti nella lista degli utenti connessi
             const sender = users.find(u => u.userId === senderId);
             const receiver = users.find(u => u.userId === receiverId);
-            
-            if (sender) {
-                io.to(sender.socketId).emit('friendRequestAccepted', { receiverId });
-            }
-            if (receiver) {
-                io.to(receiver.socketId).emit('friendAdded', { friendId: senderId });
-            }
-    
-            console.log(`✅ [SERVER] Amicizia confermata tra ${senderId} e ${receiverId}`);
-    
+
+            // 🔄 Aggiorniamo la lista amici per entrambi gli utenti
+            const updateFriendsList = async (userId, socketId) => {
+                if (socketId) {
+                    const friends = await pool.query(
+                        `SELECT u.id, u.username 
+                         FROM friends 
+                         JOIN users u ON (
+                             (friends.user_id1 = u.id AND friends.user_id2 = $1) 
+                             OR 
+                             (friends.user_id2 = u.id AND friends.user_id1 = $1)
+                         )`,
+                        [userId]
+                    );
+                    io.to(socketId).emit('friendsList', friends.rows);
+                }
+            };
+
+            // 🔄 Aggiorna la lista amici per entrambi
+            if (sender) updateFriendsList(senderId, sender.socketId);
+            if (receiver) updateFriendsList(receiverId, receiver.socketId);
+
         } catch (err) {
             console.error('❌ Errore nell\'accettare la richiesta:', err);
         }
     });
 
+
     socket.on('getFriendsList', async ({ userId }) => {
         try {
             const friends = await pool.query(
-                `SELECT u.id, u.username FROM friends 
-                 JOIN users u ON 
-                     (friends.user_id1 = u.id OR friends.user_id2 = u.id)
-                 WHERE 
-                     (friends.user_id1 = $1 OR friends.user_id2 = $1)
-                     AND u.id != $1`, // ✅ Esclude l'utente stesso dalla lista
+                `SELECT u.id, u.username 
+                 FROM friends 
+                 JOIN users u ON (
+                     (friends.user_id1 = u.id AND friends.user_id2 = $1) 
+                     OR 
+                     (friends.user_id2 = u.id AND friends.user_id1 = $1)
+                 )`,
                 [userId]
             );
-    
+
             console.log(`✅ [SERVER] Lista amici aggiornata per ${userId}:`, friends.rows);
             io.to(socket.id).emit('friendsList', friends.rows);
-    
+
         } catch (err) {
             console.error('❌ Errore nel recuperare la lista amici:', err);
         }
     });
+
 
     socket.on('rejectFriendRequest', async ({ senderId, receiverId }) => {
         try {
@@ -184,13 +329,13 @@ io.on('connection', (socket) => {
                 `DELETE FROM friend_requests WHERE sender_id = $1 AND receiver_id = $2`,
                 [senderId, receiverId]
             );
-    
+
             const sender = users.find(u => u.userId === senderId);
             if (sender) {
                 console.log(`❌ [SERVER] Richiesta di amicizia rifiutata tra ${senderId} e ${receiverId}`);
                 io.to(sender.socketId).emit('friendRequestRejected', { receiverId });
             }
-    
+
         } catch (err) {
             console.error('❌ Errore nel rifiutare la richiesta:', err);
         }
@@ -199,29 +344,29 @@ io.on('connection', (socket) => {
     socket.on('getFriendRequests', async ({ userId }) => {
         try {
             console.log(`📨 [SERVER] Recupero richieste di amicizia per l'utente ${userId}`);
-    
+
             const requests = await pool.query(
                 `SELECT u.id, u.username FROM friend_requests fr
                  JOIN users u ON fr.sender_id = u.id
                  WHERE fr.sender_id != $1 AND fr.status = 'pending'`,
                 [userId]
             );
-    
+
             console.log(`✅ [SERVER] Trovate ${requests.rowCount} richieste di amicizia per ${userId}`);
             io.to(socket.id).emit('friendRequests', requests.rows);
-    
+
         } catch (err) {
             console.error('❌ Errore nel recupero delle richieste di amicizia:', err);
         }
     });
-    
+
     socket.on('removeFriend', async ({ userId, friendId }) => {
         try {
             await pool.query(
                 `DELETE FROM friends WHERE (user_id1 = $1 AND user_id2 = $2) OR (user_id1 = $2 AND user_id2 = $1)`,
                 [userId, friendId]
             );
-    
+
             const friend = users.find(u => u.userId === friendId);
             if (friend) {
                 io.to(friend.socketId).emit('friendRemoved', { userId });
@@ -297,70 +442,86 @@ io.on('connection', (socket) => {
 
 
     socket.on('notification', async (friendId) => {
-  
+
         // Trova l'utente nell'array `users`
         const friend = users.find(u => u.userId === friendId);
-      
+
         if (friend) {
-          const friendSocketId = friend.socketId; // Ottieni socket ID corretto
-          console.log(`Sending notification to user ${friendId} with socket ID ${friendSocketId}`);
-      
-          // Invia la notifica tramite WebSocket
-          io.to(friendSocketId).emit('notification', {
-            message: `Hai ricevuto un messaggio`,
-          });
-      
-          console.log('Notification sent via WebSocket');
+            const friendSocketId = friend.socketId; // Ottieni socket ID corretto
+            console.log(`Sending notification to user ${friendId} with socket ID ${friendSocketId}`);
+
+            // Invia la notifica tramite WebSocket
+            io.to(friendSocketId).emit('notification', {
+                message: `Hai ricevuto un messaggio`,
+            });
+
+            console.log('Notification sent via WebSocket');
         } else {
-          console.log('Friend is offline, attempting to send push notification');
-      
-          // Se l'amico è offline, invia una notifica push
-          try {
-            const result = await pool.query(
-              `SELECT 
+            console.log('Friend is offline, attempting to send push notification');
+
+            // Se l'amico è offline, invia una notifica push
+            try {
+                const result = await pool.query(
+                    `SELECT 
                  subscription->>'endpoint' AS endpoint, 
                  subscription->'keys'->>'p256dh' AS p256dh_key, 
                  subscription->'keys'->>'auth' AS auth_key 
                FROM subscriptions 
                WHERE user_id = $1`,
-              [friendId]
-            );
-      
-            if (result.rowCount > 0) {
-              const sub = result.rows[0];
-              const subscription = {
-                endpoint: sub.endpoint,
-                keys: {
-                  p256dh: sub.p256dh_key,
-                  auth: sub.auth_key,
-                },
-              };
-      
-              console.log('Push notification data:', subscription);
-              sendPushNotification(subscription, 'Nuovo Messaggio', 'richiesta di amicizia');
-              console.log('Push notification sent');
-            } else {
-              console.log('No subscription found for the friend');
+                    [friendId]
+                );
+
+                if (result.rowCount > 0) {
+                    const sub = result.rows[0];
+                    const subscription = {
+                        endpoint: sub.endpoint,
+                        keys: {
+                            p256dh: sub.p256dh_key,
+                            auth: sub.auth_key,
+                        },
+                    };
+
+                    console.log('Push notification data:', subscription);
+                    sendPushNotification(subscription, 'Nuovo Messaggio', 'richiesta di amicizia');
+                    console.log('Push notification sent');
+                } else {
+                    console.log('No subscription found for the friend');
+                }
+            } catch (err) {
+                console.error('Error sending push notification:', err);
             }
-          } catch (err) {
-            console.error('Error sending push notification:', err);
-          }
         }
-      });
-      
+    });
+
+    socket.on('inviteToRoom', ({ senderId, senderName, receiverId, roomId }) => {
+        const receiver = users.find(u => u.userId === receiverId);
+
+        if (receiver) {
+            // Se l'utente è online, invia l'invito
+            io.to(receiver.socketId).emit('roomInvitation', { senderId, senderName, roomId });
+            console.log(`📩 Invito inviato a ${receiverId} per la stanza ${roomId}`);
+        } else {
+            console.log(`❌ Utente ${receiverId} non online. Salvo invito nel DB.`);
+            // Se l'utente è offline, salviamo l'invito nel database per notificarglielo dopo
+            pool.query(
+                `INSERT INTO invitations (sender_id, receiver_id, room_id, status) VALUES ($1, $2, $3, 'pending')`,
+                [senderId, receiverId, roomId]
+            );
+        }
+    });
+
+
     socket.on('exit', ({ userId, id }) => {
         rooms.forEach(room => {
             if (room.id === id) {
                 room.players = room.players.filter(player => player.playerId !== userId);
-                if (room.players.length === 0) rooms = rooms.filter(r => r.id !== room.id);
-                else room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room));
+                if (room.players.length === 0) {
+                    rooms = rooms.filter(r => r.id !== room.id)
+                    io.emit('roomsData', rooms);
+
+                } else room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room));
             }
         });
-    });
-
-    socket.on('getRooms', () => {
-        // Respond with the list of rooms
-        socket.emit('roomsData', rooms.filter(room => room.status !== 'started'));  // Send rooms data back to the client
     });
 
     socket.on('findOpponent', (userId) => {
@@ -369,14 +530,18 @@ io.on('connection', (socket) => {
         io.emit('opponentFound', { userId, opponent: 'opponent data' });
     });
 
-    // Aggiorna la stanza
+    socket.on('getRooms', () => {
+        io.to(socket.id).emit('roomsData', rooms);
+    });
+
     socket.on('updateRoom', (settings) => {
         const { roomId, newSettings } = settings;
-
-        // Find the room by roomId
         const room = rooms.find(r => r.id === roomId);
 
         if (room) {
+            if (newSettings.name && room.players.find(p => p.playerId === newSettings.userId)?.isCreator) {
+                room.name = newSettings.name;
+            }
             Object.assign(room, newSettings);
 
             room.players.forEach(p => {
@@ -385,10 +550,19 @@ io.on('connection', (socket) => {
                     io.to(socket).emit('roomUpdated', room);
                 }
             });
+            io.emit('roomsData', rooms);
+
         } else {
             console.log(`Room with ID ${roomId} not found.`);
         }
     });
+
+    socket.on('deleteRoom', ({ id }) => {
+        rooms = rooms.filter(r => r.id !== id);
+        io.to(socket.id).emit('roomDeleted', 'OK');
+        io.emit('roomsData', rooms);
+    });
+
 
     socket.on('getQuestions', ({ roomId, totalQuestions, category }) => {
         const room = rooms.find(r => r.id === roomId);
@@ -410,7 +584,6 @@ io.on('connection', (socket) => {
     });
 
 
-
     socket.on('disconnect', () => {
         const userId = users.find(u => u.socketId === socket.id)?.socketId;
         if (userId) {
@@ -422,6 +595,8 @@ io.on('connection', (socket) => {
             else room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room));
         });
     });
+
+
 
     socket.on('getRoom', (roomId) => {
         const room = rooms.find(r => r.id === roomId);
@@ -461,6 +636,65 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 
+function handleUserDisconnect(socketId) {
+    const user = users.find(u => u.socketId === socketId);
+    if (!user) return;
+
+    console.log(`❌ [SERVER] Disconnessione forzata dell'utente ${user.userId}`);
+
+    // Rimuoviamo l'utente dalla lista
+    users = users.filter(u => u.socketId !== user.socketId);
+    // Troviamo la stanza in cui era l'utente
+    const room = rooms.find(r => r.players.some(p => p.playerId === user.userId));
+
+    if (room) {
+        console.log(`🚪 Rimuoviamo ${user.userId} dalla stanza ${room.id}`);
+
+        // Rimuoviamo il giocatore dalla stanza
+        room.players = room.players.filter(p => p.playerId !== user.userId);
+
+        // Se il giocatore non ha inviato il risultato, lo marchiamo come "Assente"
+        const existingResult = room.results?.find(result => result.userId === user.userId);
+        if (!existingResult) {
+            room.results?.push({
+                userId: user.userId,
+                firstname: "Assente",
+                correctAnswersCount: 0,
+                totalTime: 9999 // Un valore alto indica che non ha completato
+            });
+        }
+
+        // **Notifica tutti i giocatori rimasti**
+        room.players.forEach(player => {
+            const playerSocket = users.find(u => u.userId === player.playerId)?.socketId;
+            if (playerSocket) {
+                io.to(playerSocket).emit('roomUpdated', room);
+                io.to(playerSocket).emit('gameResultsUpdated', room.results);
+            }
+        });
+
+        // Se tutti i giocatori hanno finito, chiudiamo la stanza
+        if (room.results?.length === room.players.length) {
+            console.log(`🛑 Tutti i giocatori della stanza ${room.id} hanno terminato.`);
+
+            room.players.forEach(player => {
+                const playerSocket = users.find(u => u.userId === player.playerId)?.socketId;
+                if (playerSocket) {
+                    io.to(playerSocket).emit('gameFinished', room.results);
+                }
+            });
+            setTimeout(() => {
+                rooms = rooms.filter(r => r.id !== room.id);
+                console.log(`Stanza ${room.id} rimossa dopo la conclusione.`);
+            }, 10000); // Rimuove la stanza dopo 10 secondi
+            // **Eliminare la stanza dopo 10 secondi**
+            setTimeout(() => {
+                rooms = rooms.filter(r => r.id !== room.id);
+                console.log(`🗑 Stanza ${room.id} rimossa dopo la conclusione.`);
+            }, 10000);
+        }
+    }
+}
 
 
 
