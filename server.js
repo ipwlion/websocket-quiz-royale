@@ -27,28 +27,44 @@ app.use(errorHandler);
 
 let users = [];
 let rooms = [];
-const rankedQueue = []; // Coda per il matchmaking Ranked
-
+let rankedQueue = []; // Coda per il matchmaking Ranked
+let rankedRooms = [];
 const PING_INTERVAL = 10000; // Tempo tra un ping e l'altro (10 sec)
 const PING_TIMEOUT = 15000; // Timeout per considerare il client disconnesso (15 sec)
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('userLoggedIn', (userId) => {
-        // Controlla se l'utente esiste già nella lista
-        const existingUserIndex = users.findIndex(u => u.userId === userId.userId);
-
-        if (existingUserIndex !== -1) {
-            // Rimuove il vecchio utente dalla lista per evitare duplicati
-            users.splice(existingUserIndex, 1);
-            console.log(`Vecchio socket rimosso per l'utente ${userId.userId}`);
+    socket.on('userLoggedIn', (userData) => {
+        const userId = Number(userData.userId);
+        if (isNaN(userId)) {
+            console.error(`❌ Errore: userId non valido (${userData.userId})`);
+            return;
         }
 
-        // Aggiunge il nuovo socketId
-        users.push({ userId: userId.userId, socketId: socket.id, lastPing: Date.now() });
-        console.log(`User ${userId.userId} associato al socket ${socket.id}`);
+        // Controlla se l'utente esiste già
+        const existingUser = users.find(u => u.userId === userId);
+        if (existingUser) {
+            users = users.filter(u => u.userId !== userId); // Rimuove il vecchio socket
+        }
+
+        users.push({ userId, socketId: socket.id, lastPing: Date.now() });
+
+        // 🔥 Non sovrascrivere se lo stato è già "in_room"
+        if (existingUser?.status !== "in_room" && existingUser?.status !== "playing") {
+            const userIndex = users.findIndex(u => u.userId === userId);
+            if (userIndex !== -1) {
+                users[userIndex].status = 'online'; // ✅ Mantiene coerente lo stato in memoria
+            } else {
+                console.warn(`⚠️ [WARNING] Utente ${userId} non trovato in memoria.`);
+            }
+            updateFriendsStatus(userId, "online");
+        }
+
+        console.log(`✅ User ${userId} connesso con socket ${socket.id}`);
     });
+
+
 
     socket.on('pong', () => {
         const user = users.find(u => u.socketId === socket.id);
@@ -63,117 +79,88 @@ io.on('connection', (socket) => {
         users.forEach((user) => {
             if (now - user.lastPing > PING_TIMEOUT) {
                 console.log(`🚫 Utente ${user.socketId} considerato disconnesso (timeout ping)`);
-
-
-                // Simuliamo la disconnessione forzata per aggiornare le stanze
+                    user.status = 'offline'; // ✅ Mantiene coerente lo stato in memoria
+                updateFriendsStatus(user.userId, 'offline')
                 handleUserDisconnect(user.socketId);
             } else {
+                if (user?.status !== "in_room" && user?.status !== "playing" && user?.status !== "online" ) {
+
+                    user.status = 'online'; // ✅ Mantiene coerente lo stato in memoria
+                    updateFriendsStatus(user.userId, "online");
+                }
                 io.to(user.socketId).emit('ping'); // Invia un ping al client
             }
         });
     }, PING_INTERVAL);
 
-
+    socket.on('findRankedMatch', async ({ userId }) => {
+        try {
+            const userRankQuery = await pool.query(`SELECT rank FROM users WHERE id = $1`, [userId]);
+            if (userRankQuery.rowCount === 0) return;
     
-
-    // socket.on('findRankedMatch', async ({ userId }) => {
-    //     try {
-    //         const userRankQuery = await pool.query(`SELECT rank FROM users WHERE id = $1`, [userId]);
-    //         if (userRankQuery.rowCount === 0) return;
+            const userRank = userRankQuery.rows[0].rank;
+            console.log(`🔍 [Ranked] Utente ${userId} (Rank ${userRank}) cerca un avversario...`);
     
-    //         const userRank = userRankQuery.rows[0].rank;
-    //         console.log(`🔍 [Ranked] Utente ${userId} (Rank ${userRank}) cerca un avversario...`);
+            // ✅ Aggiungiamo subito il giocatore alla coda
+            rankedQueue.push({ userId, rank: userRank });
     
-    //         let opponentIndex = rankedQueue.findIndex(player => 
-    //             Math.abs(player.rank - userRank) <= 200
-    //         );
+            // ✅ Controlliamo se c'è un match
+            matchPlayers();
     
-    //         if (opponentIndex !== -1) {
-    //             const opponent = rankedQueue.splice(opponentIndex, 1)[0];
+            // ✅ Dopo 10 secondi allarghiamo il range di ricerca
+            setTimeout(() => {
+                for (let player of rankedQueue) {
+                    if (player.userId === userId) {
+                        console.log(`🔄 [Ranked] Espandiamo la ricerca per ${userId}...`);
+                        player.rank -= 200;
+                        player.rank += 200;
+                    }
+                }
+                matchPlayers();
+            }, 10000);
     
-    //             console.log(`✅ [Ranked] Match trovato: ${userId} vs ${opponent.userId}`);
+            // ✅ Dopo 25 secondi, se non trova nessuno, crea un bot
+            setTimeout(() => {
+                const stillWaiting = rankedQueue.findIndex(player => player.userId === userId);
+                if (stillWaiting !== -1) {
+                    console.log(`🤖 [BOT] Creiamo un avversario per ${userId} dopo 25 secondi`);
     
-    //             // Generiamo parametri casuali per la partita
-    //             const rankedGame = {
-    //                 id: `ranked_${Date.now()}`,
-    //                 players: [
-    //                     { playerId: userId, rank: userRank },
-    //                     { playerId: opponent.userId, rank: opponent.rank }
-    //                 ],
-    //                 settings: {
-    //                     questionCount: [5, 10, 15][Math.floor(Math.random() * 3)], // Numero domande casuale
-    //                     timePerQuestion: [10, 15, 20][Math.floor(Math.random() * 3)], // Tempo per domanda casuale
-    //                     category: "Random" // Tutte le categorie
-    //                 }
-    //             };
+                    // 🔥 Rimuove l'utente dalla coda
+                    rankedQueue.splice(stillWaiting, 1);
     
-    //             io.to(users.find(u => u.userId === userId)?.socketId).emit('rankedMatchFound', rankedGame);
-    //             io.to(users.find(u => u.userId === opponent.userId)?.socketId).emit('rankedMatchFound', rankedGame);
+                    // 🎭 Creazione di un bot
+                    const botId = `bot_${Date.now()}`;
+                    const botName = getRandomBotName();
+                    const botRank = userRank + (Math.random() * 100 - 50); // ±50 punti dal rank
+                    const roomId = `ranked_${Date.now()}`; // Creiamo una stanza
     
-    //         } else {
-    //             console.log(`⏳ [Ranked] Utente ${userId} in coda...`);
-    //             rankedQueue.push({ userId, rank: userRank });
+                    // 🔥 Creiamo la stanza ranked
+                    rankedRooms.push({
+                        id: roomId,
+                        players: [
+                            { playerId: userId, rank: userRank, isBot: false },
+                            { playerId: botId, rank: botRank, isBot: true, botName: botName }
+                        ],
+                        status: 'playing'
+                    });
     
-    //             setTimeout(() => {
-    //                 const wideningIndex = rankedQueue.findIndex(player => player.userId === userId);
-    //                 if (wideningIndex !== -1) {
-    //                     console.log(`🔄 [Ranked] Espandiamo la ricerca per ${userId}...`);
-    //                     rankedQueue[wideningIndex].rank -= 200;
-    //                     rankedQueue[wideningIndex].rank += 200;
-    //                 }
-    //             }, 10000);
-    //         }
+                    console.log(`🏆 [Ranked] Stanza creata: ${roomId} tra ${userId} e BOT ${botName}`);
     
-    //     } catch (err) {
-    //         console.error('❌ Errore nel matchmaking ranked:', err);
-    //     }
-    // });
+                    // Invia la notifica al giocatore
+                    io.to(users.find(u => u.userId === userId)?.socketId).emit('rankedMatchFound', {
+                        roomId,
+                        players: [{ playerId: userId, rank: userRank }, { playerId: botId, rank: botRank, botName }],
+                        settings: { questionCount: 10, timePerQuestion: 15, category: "Random" }
+                    });
+                }
+            }, 25000);
     
-    // socket.on('rankedGameFinished', async ({ gameId, results }) => {
-    //     try {
-    //         console.log(`🏆 [Ranked] Calcolo vincitore per la partita ${gameId}`);
-    
-    //         const [player1, player2] = results;
-    
-    //         let winnerId, loserId;
-    //         if (player1.correctAnswersCount > player2.correctAnswersCount) {
-    //             winnerId = player1.userId;
-    //             loserId = player2.userId;
-    //         } else if (player1.correctAnswersCount < player2.correctAnswersCount) {
-    //             winnerId = player2.userId;
-    //             loserId = player1.userId;
-    //         } else {
-    //             // In caso di pareggio, vince chi ha risposto più velocemente
-    //             winnerId = player1.totalTime < player2.totalTime ? player1.userId : player2.userId;
-    //             loserId = player1.totalTime < player2.totalTime ? player2.userId : player1.userId;
-    //         }
-    
-    //         console.log(`✅ Vincitore: ${winnerId}, Perdente: ${loserId}`);
-    
-    //         // 📝 Salva la partita nel database
-    //         await pool.query(`
-    //             INSERT INTO ranked_matches (game_id, player1_id, player2_id, player1_score, player2_score, player1_time, player2_time, winner_id)
-    //             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    //             [gameId, player1.userId, player2.userId, player1.correctAnswersCount, player2.correctAnswersCount, player1.totalTime, player2.totalTime, winnerId]
-    //         );
-    
-    //         console.log(`✅ Partita ranked ${gameId} salvata nel database.`);
-    
-    //         // 📊 Aggiornamento del ranking
-    //         await pool.query(`UPDATE users SET rank = rank + 20 WHERE id = $1`, [winnerId]);
-    //         await pool.query(`UPDATE users SET rank = rank - 10 WHERE id = $1`, [loserId]);
-    
-    //         // 📢 Notifica i giocatori
-    //         io.to(users.find(u => u.userId === winnerId)?.socketId).emit('rankedMatchResult', { result: 'win', winnerId });
-    //         io.to(users.find(u => u.userId === loserId)?.socketId).emit('rankedMatchResult', { result: 'lose', loserId });
-    
-    //     } catch (err) {
-    //         console.error('❌ Errore aggiornamento ranking:', err);
-    //     }
-    // });
+        } catch (err) {
+            console.error('❌ Errore nel matchmaking ranked:', err);
+        }
+    });
     
     
-
     socket.on('createRoom', ({ userId, userName }) => {
         const roomId = `room_${Date.now()}`;
 
@@ -185,6 +172,14 @@ io.on('connection', (socket) => {
         };
 
         rooms.push(newRoom);
+        const userIndex = users.findIndex(u => u.userId === userId);
+        if (userIndex !== -1) {
+            users[userIndex].status = 'in_room'; // ✅ Mantiene coerente lo stato in memoria
+        } else {
+            console.warn(`⚠️ [WARNING] Utente ${userId} non trovato in memoria.`);
+        }
+        updateFriendsStatus(userId, "in_room");
+
         io.to(socket.id).emit('roomCreated', newRoom);
     });
 
@@ -194,6 +189,20 @@ io.on('connection', (socket) => {
             if (!room?.players.find(x => x.playerId === userId)) {
                 room.players.push({ playerId: userId, playerName: userName, isCreator: false });
                 room.players.forEach(player => io.to(users.find(u => u.userId === player.playerId)?.socketId).emit('roomUpdated', room));
+                room.players.forEach(player => {
+                    // 🔍 Trova l'utente nella lista `users`
+                    const user = users.find(u => u.userId === player.playerId);
+                    
+                    if (user) {
+                        user.status = "in_room"; // ✅ Aggiorna lo stato nella memoria del server
+                        console.log(`🟠 [DEBUG] Stato aggiornato: ${player.playerId} → playing`);
+                    } else {
+                        console.warn(`⚠️ [WARNING] Utente ${player.playerId} non trovato in memoria.`);
+                    }
+            
+                    updateFriendsStatus(player.playerId, "in_room");
+                });
+
             } else {
                 io.to(socket.id).emit('alreadyInRoom', room);
             }
@@ -245,7 +254,7 @@ io.on('connection', (socket) => {
             const receiver = users.find(u => u.userId === receiverId);
             if (receiver) {
                 console.log(`📩 [SERVER] Nuova richiesta di amicizia inviata a ${receiverId}`);
-                io.to(receiver.socketId).emit('newFriendRequest', { senderId });
+                io.to(receiver.socketId).emit('newFriendRequest', { receiverId });
             }
 
             // ✅ Invio della notifica anche all'utente che ha inviato la richiesta
@@ -304,19 +313,21 @@ io.on('connection', (socket) => {
     socket.on('getFriendsList', async ({ userId }) => {
         try {
             const friends = await pool.query(
-                `SELECT u.id, u.username 
+                `SELECT u.id, u.username, 
+                    COALESCE(us.status, 'offline') AS status
                  FROM friends 
                  JOIN users u ON (
                      (friends.user_id1 = u.id AND friends.user_id2 = $1) 
                      OR 
                      (friends.user_id2 = u.id AND friends.user_id1 = $1)
-                 )`,
+                 )
+                 LEFT JOIN (
+                    SELECT id, status FROM users
+                 ) us ON u.id = us.id`, // 🔥 CORRETTO: us.id invece di us.userId
                 [userId]
             );
 
-            console.log(`✅ [SERVER] Lista amici aggiornata per ${userId}:`, friends.rows);
             io.to(socket.id).emit('friendsList', friends.rows);
-
         } catch (err) {
             console.error('❌ Errore nel recuperare la lista amici:', err);
         }
@@ -432,6 +443,20 @@ io.on('connection', (socket) => {
                 io.to(users.find(u => u.userId === player.playerId)?.socketId).emit('gameFinished', room.results);
             });
 
+            room.players.forEach(player => {
+                // 🔍 Trova l'utente nella lista `users`
+                const user = users.find(u => u.userId === player.playerId);
+                
+                if (user) {
+                    user.status = "online"; // ✅ Aggiorna lo stato nella memoria del server
+                    console.log(`🟠 [DEBUG] Stato aggiornato: ${player.playerId} → playing`);
+                } else {
+                    console.warn(`⚠️ [WARNING] Utente ${player.playerId} non trovato in memoria.`);
+                }
+        
+                // 🔄 Aggiorna il database e notifica gli amici
+                updateFriendsStatus(player.playerId, "online");
+            });
             // **Opzionale**: Eliminare i dati della stanza dopo la fine
             setTimeout(() => {
                 rooms = rooms.filter(r => r.id !== roomId);
@@ -519,9 +544,18 @@ io.on('connection', (socket) => {
                     rooms = rooms.filter(r => r.id !== room.id)
                     io.emit('roomsData', rooms);
 
-                } else room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room));
+                } else {
+                    room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room))
+                };
             }
         });
+        const userIndex = users.findIndex(u => u.userId === userId);
+        if (userIndex !== -1) {
+            users[userIndex].status = 'online'; // ✅ Mantiene coerente lo stato in memoria
+        } else {
+            console.warn(`⚠️ [WARNING] Utente ${userId} non trovato in memoria.`);
+        }
+        updateFriendsStatus(userId, "online");
     });
 
     socket.on('findOpponent', (userId) => {
@@ -552,16 +586,61 @@ io.on('connection', (socket) => {
             });
             io.emit('roomsData', rooms);
 
+            if (newSettings.status === 'started') {
+                console.log(`🎮 [DEBUG] La partita nella stanza ${roomId} è iniziata! Aggiornamento stato utenti...`);
+            
+                room.players.forEach(player => {
+                    // 🔍 Trova l'utente nella lista `users`
+                    const user = users.find(u => u.userId === player.playerId);
+                    
+                    if (user) {
+                        user.status = "playing"; // ✅ Aggiorna lo stato nella memoria del server
+                        console.log(`🟠 [DEBUG] Stato aggiornato: ${player.playerId} → playing`);
+                    } else {
+                        console.warn(`⚠️ [WARNING] Utente ${player.playerId} non trovato in memoria.`);
+                    }
+            
+                    // 🔄 Aggiorna il database e notifica gli amici
+                    updateFriendsStatus(player.playerId, "playing");
+                });
+            }
+            
+
         } else {
             console.log(`Room with ID ${roomId} not found.`);
         }
     });
 
     socket.on('deleteRoom', ({ id }) => {
+        const room = rooms.find(r => r.id === id);
+        if (!room) {
+            console.warn(`⚠️ [WARNING] Stanza ${id} non trovata.`);
+            return;
+        }
+    
+        console.log(`❌ [SERVER] Stanza ${id} eliminata! Notificando i giocatori...`);
+    
+        // 🔍 Notifica tutti i giocatori che la stanza è stata eliminata
+        room.players.forEach(player => {
+            const user = users.find(u => u.userId === player.playerId);
+    
+            if (user) {
+                user.status = "online"; // ✅ Aggiorna lo stato in memoria
+                io.to(user.socketId).emit('roomDeleted', { roomId: id, message: "La stanza è stata eliminata dal creatore." });
+                console.log(`🔔 [DEBUG] Notifica inviata a ${player.playerId} (roomDeleted)`);
+            }
+    
+            // 🔄 Aggiorna il database con lo stato "online"
+            updateFriendsStatus(player.playerId, "online");
+        });
+    
+        // 🔥 Rimuove la stanza dalla lista
         rooms = rooms.filter(r => r.id !== id);
-        io.to(socket.id).emit('roomDeleted', 'OK');
+        
+        // 📢 Notifica a tutti che la lista delle stanze è aggiornata
         io.emit('roomsData', rooms);
     });
+    
 
 
     socket.on('getQuestions', ({ roomId, totalQuestions, category }) => {
@@ -583,10 +662,47 @@ io.on('connection', (socket) => {
         io.to(socket.id).emit('questionsData', { questions: room.questions });
     });
 
+    
 
+    socket.on('getQuestionsRanked', ({ roomId, totalQuestions, category }) => {
+        const room = rankedRooms.find(r => r.id === roomId);
+    
+        if (!room) {
+            console.log(rankedRooms)
+            console.log(roomId)
+            io.to(socket.id).emit('roomNotFound', 'La stanza non esiste.');
+            return;
+        }
+    
+        console.log(`📥 [SERVER] Richiesta domande per Ranked: Stanza ${roomId}, Categoria: ${category}`);
+    
+        // Se la stanza non ha già domande assegnate, le assegniamo ora
+        if (!room.questions) {
+            const allQuestions = category === 'Tutte le categorie' || category === 'Random' ? questionsMock : questionsMock.filter(q => q.category === category) || questionsMock;
+            const shuffled = allQuestions.sort(() => 0.5 - Math.random());
+            room.questions = shuffled.slice(0, totalQuestions);
+        }
+    
+        // 🔥 Invia lo stesso set di domande a tutti i giocatori della stanza
+        room.players.forEach(player => {
+            const playerSocket = users.find(u => u.userId === player.playerId)?.socketId;
+            if (playerSocket) {
+                io.to(playerSocket).emit('questionsDataRanked', { questions: room.questions });
+                console.log(`📜 [SERVER] Domande inviate a ${player.playerId}`);
+            }
+        });
+    });
+    
     socket.on('disconnect', () => {
         const userId = users.find(u => u.socketId === socket.id)?.socketId;
         if (userId) {
+            const userIndex = users.findIndex(u => u.userId === userId);
+            if (userIndex !== -1) {
+                users[userIndex].status = 'offline'; // ✅ Mantiene coerente lo stato in memoria
+            } else {
+                console.warn(`⚠️ [WARNING] Utente ${userId} non trovato in memoria.`);
+            }
+            updateFriendsStatus(userId, "offline");
             users = users.filter(u => u.userId !== userId);
         }
         rooms.forEach(room => {
@@ -594,6 +710,7 @@ io.on('connection', (socket) => {
             if (room.players.length === 0) rooms = rooms.filter(r => r.id !== room.id);
             else room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room));
         });
+
     });
 
 
@@ -696,7 +813,181 @@ function handleUserDisconnect(socketId) {
     }
 }
 
+function matchPlayers() {
+    console.log(`🔄 [Ranked] Controllo della coda per match disponibili...`);
 
+    for (let i = 0; i < rankedQueue.length; i++) {
+        for (let j = i + 1; j < rankedQueue.length; j++) {
+            const player1 = rankedQueue[i];
+            const player2 = rankedQueue[j];
+
+            if (Math.abs(player1.rank - player2.rank) <= 200) {
+                const roomId = `ranked_${Date.now()}`;
+
+                console.log(`✅ [Ranked] Match trovato: ${player1.userId} vs ${player2.userId}`);
+                console.log(`🏆 Creiamo la stanza: ${roomId}`);
+
+                // 🔥 Creiamo la stanza
+                rankedRooms.push({
+                    id: roomId,
+                    players: [
+                        { playerId: player1.userId, rank: player1.rank, isBot: false },
+                        { playerId: player2.userId, rank: player2.rank, isBot: false }
+                    ],
+                    status: 'playing'
+                });
+
+                // ✅ Invia l'evento ai giocatori
+                io.to(users.find(u => u.userId === player1.userId)?.socketId).emit('rankedMatchFound', {
+                    roomId,
+                    players: [{ playerId: player1.userId, rank: player1.rank }, { playerId: player2.userId, rank: player2.rank }],
+                    settings: { questionCount: 10, timePerQuestion: 15, category: "Random" }
+                });
+
+                io.to(users.find(u => u.userId === player2.userId)?.socketId).emit('rankedMatchFound', {
+                    roomId,
+                    players: [{ playerId: player1.userId, rank: player1.rank }, { playerId: player2.userId, rank: player2.rank }],
+                    settings: { questionCount: 10, timePerQuestion: 15, category: "Random" }
+                });
+
+                // ✅ Rimuoviamo i due giocatori dalla coda
+                rankedQueue = rankedQueue.filter(p => p.userId !== player1.userId && p.userId !== player2.userId);
+                return;
+            }
+        }
+    }
+}
+
+
+async function updateFriendsStatus(userId, status) {
+    console.log(`🔄 [DEBUG] Cambiando stato di ${userId} → ${status} (chiamato da: ${getCallerFunction()})`);
+
+    try {
+        await pool.query(`UPDATE users SET status = $1 WHERE id = $2`, [status, userId]);
+
+        // Notifica gli amici dell'aggiornamento di stato
+        const friends = await pool.query(
+            `SELECT u.id FROM friends 
+             JOIN users u ON (
+                 (friends.user_id1 = u.id AND friends.user_id2 = $1) 
+                 OR 
+                 (friends.user_id2 = u.id AND friends.user_id1 = $1)
+             )`,
+            [userId]
+        );
+
+        friends.rows.forEach(friend => {
+            const friendSocket = users.find(u => u.userId === friend.id)?.socketId;
+            if (friendSocket) {
+                io.to(friendSocket).emit('friendStatusUpdate', { userId, status });
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ Errore nell\'aggiornare lo stato agli amici:', err);
+    }
+}
+
+// 🔍 Funzione per trovare chi sta chiamando updateFriendsStatus()
+function getCallerFunction() {
+    try {
+        const err = new Error();
+        const stackLines = err.stack.split("\n");
+        return stackLines[3].trim(); // Mostra la funzione che chiama updateFriendsStatus()
+    } catch {
+        return "Unknown";
+    }
+}
+
+function createRankedGame(player1Id, player1Rank, player2Id, player2Rank, isBot = false, botName = null) {
+    return {
+        id: `ranked_${Date.now()}`,
+        players: [
+            { playerId: player1Id, rank: player1Rank },
+            { playerId: player2Id, rank: player2Rank, isBot, botName }
+        ],
+        settings: {
+            questionCount: [5, 10, 15][Math.floor(Math.random() * 3)],
+            timePerQuestion: [10, 15, 20][Math.floor(Math.random() * 3)],
+            category: "Random"
+        }
+    };
+}
+
+function startRankedGame(rankedGame) {
+    const player1 = rankedGame.players[0];
+    const player2 = rankedGame.players[1];
+
+    console.log(`🎮 [Ranked] Inizio partita: ${player1.playerId} vs ${player2.isBot ? player2.botName : player2.playerId}`);
+
+    // 🔥 Se il player2 è un bot, genera i suoi risultati falsi
+    if (player2.isBot) {
+        setTimeout(() => {
+            const botResults = {
+                userId: player2.playerId,
+                firstname: player2.botName,
+                correctAnswersCount: Math.floor(Math.random() * 6), // 0-5 risposte corrette
+                totalTime: Math.floor(Math.random() * 20) + 10 // Tempo tra 10 e 30 secondi
+            };
+
+            console.log(`🤖 [BOT] Risultati generati per ${player2.botName}:`, botResults);
+            handleRankedGameFinish(rankedGame.id, [player1, botResults]);
+        }, Math.random() * 15000 + 5000); // Il bot risponde tra 5 e 20 secondi
+    }
+
+    // 📢 Notifica il giocatore umano
+    io.to(users.find(u => u.userId === player1.playerId)?.socketId).emit('rankedMatchFound', rankedGame);
+    io.to(users.find(u => u.userId === player2?.playerId)?.socketId).emit('rankedMatchFound', rankedGame);
+
+}
+
+async function handleRankedGameFinish(gameId, results) {
+    try {
+        console.log(`🏆 [Ranked] Calcolo vincitore per la partita ${gameId}`);
+
+        const [player1, player2] = results;
+        let winnerId, loserId;
+
+        if (player1.correctAnswersCount > player2.correctAnswersCount) {
+            winnerId = player1.userId;
+            loserId = player2.userId;
+        } else if (player1.correctAnswersCount < player2.correctAnswersCount) {
+            winnerId = player2.userId;
+            loserId = player1.userId;
+        } else {
+            winnerId = player1.totalTime < player2.totalTime ? player1.userId : player2.userId;
+            loserId = player1.totalTime < player2.totalTime ? player2.userId : player1.userId;
+        }
+
+        console.log(`✅ Vincitore: ${winnerId}, Perdente: ${loserId}`);
+
+        // 🔥 Se il bot perde, non aggiorniamo il DB
+        if (!String(loserId).startsWith("bot_")) {
+            await pool.query(`UPDATE users SET rank = rank - 10 WHERE id = $1`, [loserId]);
+        }
+        if (!String(winnerId).startsWith("bot_")) {
+            await pool.query(`UPDATE users SET rank = rank + 20 WHERE id = $1`, [winnerId]);
+        }
+
+        // 📢 Notifica il giocatore umano
+        if (!String(winnerId).startsWith("bot_")) {
+            io.to(users.find(u => u.userId === winnerId)?.socketId).emit('rankedMatchResult', { result: 'win', winnerId });
+        }
+        if (!String(loserId).startsWith("bot_")) {
+            io.to(users.find(u => u.userId === loserId)?.socketId).emit('rankedMatchResult', { result: 'lose', loserId });
+        }
+
+    } catch (err) {
+        console.error('❌ Errore aggiornamento ranking:', err);
+    }
+}
+
+
+
+function getRandomBotName() {
+    const botNames = ["AI_Monster", "TriviaMaster3000", "Botinator", "QuizBot", "CyberBrain", "NeoQuiz"];
+    return botNames[Math.floor(Math.random() * botNames.length)];
+}
 
 
 const questionsMock = [

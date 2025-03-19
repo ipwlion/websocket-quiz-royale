@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS friend_requests (
   id SERIAL PRIMARY KEY,
   sender_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   receiver_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-  status VARCHAR(20) CHECK (status IN ('pending', 'accepted', 'rejected')) DEFAULT 'pending',
+status VARCHAR(20) DEFAULT 'offline',
   created_at TIMESTAMP DEFAULT NOW(),
   UNIQUE (sender_id, receiver_id)
 );
