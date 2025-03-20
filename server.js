@@ -31,6 +31,7 @@ let rankedQueue = []; // Coda per il matchmaking Ranked
 let rankedRooms = [];
 const PING_INTERVAL = 10000; // Tempo tra un ping e l'altro (10 sec)
 const PING_TIMEOUT = 15000; // Timeout per considerare il client disconnesso (15 sec)
+const pendingTimeouts = new Map();
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
@@ -93,6 +94,7 @@ io.on('connection', (socket) => {
         });
     }, PING_INTERVAL);
 
+
     socket.on('findRankedMatch', async ({ userId }) => {
         try {
             const userRankQuery = await pool.query(`SELECT rank FROM users WHERE id = $1`, [userId]);
@@ -101,40 +103,35 @@ io.on('connection', (socket) => {
             const userRank = userRankQuery.rows[0].rank;
             console.log(`🔍 [Ranked] Utente ${userId} (Rank ${userRank}) cerca un avversario...`);
     
-            // ✅ Aggiungiamo subito il giocatore alla coda
+            // ✅ Aggiungiamo il giocatore alla coda
             rankedQueue.push({ userId, rank: userRank });
     
-            // ✅ Controlliamo se c'è un match
-            matchPlayers();
+            // ✅ Proviamo subito a trovare un match
+            tryMatch();
     
             // ✅ Dopo 10 secondi allarghiamo il range di ricerca
-            setTimeout(() => {
-                for (let player of rankedQueue) {
-                    if (player.userId === userId) {
-                        console.log(`🔄 [Ranked] Espandiamo la ricerca per ${userId}...`);
-                        player.rank -= 200;
-                        player.rank += 200;
-                    }
+            const expandTimeout = setTimeout(() => {
+                const player = rankedQueue.find(p => p.userId === userId);
+                if (player) {
+                    console.log(`🔄 [Ranked] Espandiamo la ricerca per ${userId}...`);
+                    player.rank -= 200;
+                    player.rank += 200;
+                    tryMatch();
                 }
-                matchPlayers();
             }, 10000);
     
             // ✅ Dopo 25 secondi, se non trova nessuno, crea un bot
-            setTimeout(() => {
-                const stillWaiting = rankedQueue.findIndex(player => player.userId === userId);
-                if (stillWaiting !== -1) {
+            const botTimeout = setTimeout(() => {
+                const index = rankedQueue.findIndex(p => p.userId === userId);
+                if (index !== -1) {
                     console.log(`🤖 [BOT] Creiamo un avversario per ${userId} dopo 25 secondi`);
+                    rankedQueue.splice(index, 1);
     
-                    // 🔥 Rimuove l'utente dalla coda
-                    rankedQueue.splice(stillWaiting, 1);
-    
-                    // 🎭 Creazione di un bot
                     const botId = `bot_${Date.now()}`;
                     const botName = getRandomBotName();
-                    const botRank = userRank + (Math.random() * 100 - 50); // ±50 punti dal rank
-                    const roomId = `ranked_${Date.now()}`; // Creiamo una stanza
+                    const botRank = userRank + (Math.random() * 100 - 50);
+                    const roomId = `ranked_${Date.now()}`;
     
-                    // 🔥 Creiamo la stanza ranked
                     rankedRooms.push({
                         id: roomId,
                         players: [
@@ -146,7 +143,6 @@ io.on('connection', (socket) => {
     
                     console.log(`🏆 [Ranked] Stanza creata: ${roomId} tra ${userId} e BOT ${botName}`);
     
-                    // Invia la notifica al giocatore
                     io.to(users.find(u => u.userId === userId)?.socketId).emit('rankedMatchFound', {
                         roomId,
                         players: [{ playerId: userId, rank: userRank }, { playerId: botId, rank: botRank, botName }],
@@ -155,11 +151,13 @@ io.on('connection', (socket) => {
                 }
             }, 25000);
     
+            // ✅ Salviamo i timeout per poterli annullare
+            pendingTimeouts.set(userId, { expandTimeout, botTimeout });
+    
         } catch (err) {
             console.error('❌ Errore nel matchmaking ranked:', err);
         }
     });
-    
     
     socket.on('createRoom', ({ userId, userName }) => {
         const roomId = `room_${Date.now()}`;
@@ -813,7 +811,7 @@ function handleUserDisconnect(socketId) {
     }
 }
 
-function matchPlayers() {
+function tryMatch() {
     console.log(`🔄 [Ranked] Controllo della coda per match disponibili...`);
 
     for (let i = 0; i < rankedQueue.length; i++) {
@@ -827,7 +825,6 @@ function matchPlayers() {
                 console.log(`✅ [Ranked] Match trovato: ${player1.userId} vs ${player2.userId}`);
                 console.log(`🏆 Creiamo la stanza: ${roomId}`);
 
-                // 🔥 Creiamo la stanza
                 rankedRooms.push({
                     id: roomId,
                     players: [
@@ -837,7 +834,6 @@ function matchPlayers() {
                     status: 'playing'
                 });
 
-                // ✅ Invia l'evento ai giocatori
                 io.to(users.find(u => u.userId === player1.userId)?.socketId).emit('rankedMatchFound', {
                     roomId,
                     players: [{ playerId: player1.userId, rank: player1.rank }, { playerId: player2.userId, rank: player2.rank }],
@@ -852,6 +848,19 @@ function matchPlayers() {
 
                 // ✅ Rimuoviamo i due giocatori dalla coda
                 rankedQueue = rankedQueue.filter(p => p.userId !== player1.userId && p.userId !== player2.userId);
+
+                // ✅ Annulliamo i timeout
+                clearTimeout(pendingTimeouts.get(player1.userId)?.expandTimeout);
+                clearTimeout(pendingTimeouts.get(player1.userId)?.botTimeout);
+                pendingTimeouts.delete(player1.userId);
+
+                clearTimeout(pendingTimeouts.get(player2.userId)?.expandTimeout);
+                clearTimeout(pendingTimeouts.get(player2.userId)?.botTimeout);
+                pendingTimeouts.delete(player2.userId);
+
+                // ✅ Ricontrolliamo la coda in caso ci siano altri match disponibili
+                tryMatch();
+
                 return;
             }
         }
@@ -899,47 +908,7 @@ function getCallerFunction() {
     }
 }
 
-function createRankedGame(player1Id, player1Rank, player2Id, player2Rank, isBot = false, botName = null) {
-    return {
-        id: `ranked_${Date.now()}`,
-        players: [
-            { playerId: player1Id, rank: player1Rank },
-            { playerId: player2Id, rank: player2Rank, isBot, botName }
-        ],
-        settings: {
-            questionCount: [5, 10, 15][Math.floor(Math.random() * 3)],
-            timePerQuestion: [10, 15, 20][Math.floor(Math.random() * 3)],
-            category: "Random"
-        }
-    };
-}
 
-function startRankedGame(rankedGame) {
-    const player1 = rankedGame.players[0];
-    const player2 = rankedGame.players[1];
-
-    console.log(`🎮 [Ranked] Inizio partita: ${player1.playerId} vs ${player2.isBot ? player2.botName : player2.playerId}`);
-
-    // 🔥 Se il player2 è un bot, genera i suoi risultati falsi
-    if (player2.isBot) {
-        setTimeout(() => {
-            const botResults = {
-                userId: player2.playerId,
-                firstname: player2.botName,
-                correctAnswersCount: Math.floor(Math.random() * 6), // 0-5 risposte corrette
-                totalTime: Math.floor(Math.random() * 20) + 10 // Tempo tra 10 e 30 secondi
-            };
-
-            console.log(`🤖 [BOT] Risultati generati per ${player2.botName}:`, botResults);
-            handleRankedGameFinish(rankedGame.id, [player1, botResults]);
-        }, Math.random() * 15000 + 5000); // Il bot risponde tra 5 e 20 secondi
-    }
-
-    // 📢 Notifica il giocatore umano
-    io.to(users.find(u => u.userId === player1.playerId)?.socketId).emit('rankedMatchFound', rankedGame);
-    io.to(users.find(u => u.userId === player2?.playerId)?.socketId).emit('rankedMatchFound', rankedGame);
-
-}
 
 async function handleRankedGameFinish(gameId, results) {
     try {
