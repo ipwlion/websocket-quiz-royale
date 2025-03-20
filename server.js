@@ -158,6 +158,33 @@ io.on('connection', (socket) => {
             console.error('❌ Errore nel matchmaking ranked:', err);
         }
     });
+
+
+        /**
+     * 📤 Riceve e salva i risultati della partita
+     */
+        socket.on('saveRankedResult', async ({ roomId, userId, correctAnswers, totalTime }) => {
+            console.log(`📥 [SERVER] Salvataggio risultato - User ${userId} Room ${roomId}`);
+            await saveRankedResult(roomId, userId, correctAnswers, totalTime);
+            
+            // ✅ Dopo aver salvato, possiamo notificare gli altri giocatori
+            io.emit('rankedResultsUpdated', { roomId });
+        });
+    
+        /**
+         * 📥 Recupera i risultati della partita
+         */
+        socket.on('getRankedResults', async ({ roomId, userId }) => {
+            console.log(`📥 [SERVER] Richiesta risultati - User ${userId} Room ${roomId}`);
+            const result = await getRankedResults(roomId, userId);
+            
+            if (result) {
+                socket.emit('rankedResults', result); // ✅ Invia i risultati all'utente
+            } else {
+                console.log(`❌ [SERVER] Nessun risultato trovato per User ${userId} Room ${roomId}`);
+            }
+        });
+    
     
     socket.on('createRoom', ({ userId, userName }) => {
         const roomId = `room_${Date.now()}`;
@@ -740,6 +767,37 @@ app.post('/subscribe', async (req, res) => {
     }
 });
 
+async function saveRankedResult(roomId, userId, correctAnswers, totalTime) {
+    try {
+        await pool.query(`
+            INSERT INTO ranked_results (room_id, user_id, correct_answers, total_time)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (room_id, user_id) DO UPDATE
+            SET correct_answers = EXCLUDED.correct_answers,
+                total_time = EXCLUDED.total_time;
+        `, [roomId, userId, correctAnswers, totalTime]);
+
+        console.log(`✅ [SERVER] Risultato salvato per utente ${userId} nella stanza ${roomId}`);
+    } catch (err) {
+        console.error('❌ [SERVER] Errore nel salvataggio del risultato:', err);
+    }
+}
+
+/**
+ * 📥 Recupera i risultati della partita
+ */
+async function getRankedResults(roomId, userId) {
+    try {
+        const result = await pool.query(`
+            SELECT * FROM ranked_results WHERE room_id = $1 AND user_id = $2
+        `, [roomId, userId]);
+
+        return result.rows[0] || null;
+    } catch (err) {
+        console.error('❌ [SERVER] Errore nel recupero dei risultati:', err);
+        return null;
+    }
+}
 
 function sendPushNotification(subscription, title, body) {
     webpush.sendNotification(subscription, JSON.stringify({ title, body }))

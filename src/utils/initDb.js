@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS friends (
   UNIQUE (user_id1, user_id2)
 );
 
+CREATE TABLE ranked_results (
+  id SERIAL PRIMARY KEY,         -- ID univoco del risultato
+  room_id VARCHAR(255) NOT NULL, -- ID della stanza
+  user_id INTEGER NOT NULL,      -- ID dell'utente
+  correct_answers INTEGER NOT NULL, -- Numero di risposte corrette
+  total_time INTEGER NOT NULL,   -- Tempo totale in secondi
+  created_at TIMESTAMP DEFAULT NOW(), -- Data della partita
+  CONSTRAINT unique_room_user UNIQUE (room_id, user_id) -- Impedisce duplicati per stesso match
+);
+
+
     `);
 
     console.log('Database initialized successfully!');
