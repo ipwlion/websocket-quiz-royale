@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS friends (
   UNIQUE (user_id1, user_id2)
 );
 
-CREATE TABLE ranked_results (
+CREATE TABLE  IF NOT EXISTS ranked_results (
   id SERIAL PRIMARY KEY,         -- ID univoco del risultato
   room_id VARCHAR(255) NOT NULL, -- ID della stanza
   user_id INTEGER NOT NULL,      -- ID dell'utente
