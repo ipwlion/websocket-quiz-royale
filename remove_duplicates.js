@@ -12,9 +12,14 @@ const uniqueQuestions = Object.values(
     }, {})
 );
 
-// Salva il nuovo file JSON senza duplicati
-const outputFilePath = 'mock/cleaned_mock_questions.json';
-fs.writeFileSync(outputFilePath, JSON.stringify(uniqueQuestions, null, 4), 'utf8');
-console.log(`dimensioni: ${uniqueQuestions.length}`);
+// Filtra le domande che hanno esattamente 4 risposte
+const filteredQuestions = uniqueQuestions.filter(q => 
+    Array.isArray(q.answers) && q.answers.length === 4
+);
 
+// Salva il nuovo file JSON pulito
+const outputFilePath = 'mock/cleaned_mock_questions.json';
+fs.writeFileSync(outputFilePath, JSON.stringify(filteredQuestions, null, 4), 'utf8');
+
+console.log(`Domande valide: ${filteredQuestions.length}`);
 console.log(`File pulito salvato in: ${outputFilePath}`);
