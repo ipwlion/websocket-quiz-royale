@@ -98,6 +98,7 @@ io.on('connection', (socket) => {
 
     socket.on('findRankedMatch', async ({ userId }) => {
         try {
+            updateFriendsStatus(userId, "in_room");
             const userRankQuery = await pool.query(`SELECT rank FROM users WHERE id = $1`, [userId]);
             if (userRankQuery.rowCount === 0) return;
 
@@ -150,6 +151,8 @@ io.on('connection', (socket) => {
                         players: [{ playerId: userId, rank: userRank, username: rankedQueue.username }, { playerId: botId, rank: botRank, botName }],
                         settings: { questionCount: 10, timePerQuestion: 15, category: "Random" }
                     });
+            updateFriendsStatus(userId, "playing");
+
                 }
             }, 25000);
 
@@ -201,16 +204,16 @@ io.on('connection', (socket) => {
             };
             room.results.push(botResult);
 
-            try {
-                await pool.query(`
-              INSERT INTO ranked_results (room_id, user_id, correct_answers, total_time)
-              VALUES ($1, $2, $3, $4)
-            `, [roomId, botResult.userId, botResult.correctAnswers, botResult.totalTime]);
+            // try {
+            //     await pool.query(`
+            //   INSERT INTO ranked_results (room_id, user_id, correct_answers, total_time)
+            //   VALUES ($1, $2, $3, $4)
+            // `, [roomId, botResult.userId, botResult.correctAnswers, botResult.totalTime]);
 
-                console.log(`🤖 Risultato BOT ${bot.playerId} salvato`);
-            } catch (err) {
-                console.error('❌ Errore nel salvataggio BOT:', err);
-            }
+            //     console.log(`🤖 Risultato BOT ${bot.playerId} salvato`);
+            // } catch (err) {
+            //     console.error('❌ Errore nel salvataggio BOT:', err);
+            // }
         }
 
         // Se entrambi hanno terminato
@@ -240,10 +243,12 @@ io.on('connection', (socket) => {
             }
 
             // 📤 Invia risultati ai soli giocatori reali
-            room.players.forEach(player => {
+
+            room.players.forEach(async player => {
                 const isBot = String(player.playerId).startsWith("bot_");
                 if (isBot) return;
-
+                const { rows } = await pool.query(`SELECT rank FROM users WHERE id = $1`, [player.playerId]);
+                const updatedPoints = rows[0]?.rank ?? 0;
                 const isWinner = player.playerId === winnerId;
                 const user = users.find(u => u.userId === player.playerId);
                 const pointsChange = isWinner ? 100 : -50;
@@ -252,7 +257,8 @@ io.on('connection', (socket) => {
                     result: isWinner ? 'win' : 'lose',
                     correctAnswers: isWinner ? winner.correctAnswers : loser.correctAnswers,
                     totalTime: isWinner ? winner.totalTime : loser.totalTime,
-                    pointsChange
+                    pointsChange,
+                    points: updatedPoints // 🔥 AGGIUNTO
                 });
 
                 if (user) {
@@ -801,8 +807,11 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('disconnect', () => {
-        const userId = users.find(u => u.socketId === socket.id)?.socketId;
+    socket.on('disconnect', async () => {
+        const user = users.find(u => u.socketId === socket.id);
+        const userId = user?.userId;
+        if (!userId) return;
+        
         if (userId) {
             const userIndex = users.findIndex(u => u.userId === userId);
             if (userIndex !== -1) {
@@ -819,8 +828,63 @@ io.on('connection', (socket) => {
             else room.players.forEach(p => io.to(users.find(u => u.userId === p.playerId)?.socketId).emit('roomUpdated', room));
         });
 
-    });
 
+        rankedQueue = rankedQueue.filter(p => p.userId !== userId);
+
+        // 🎮 3. Controlla se era in una partita attiva
+        const room = rankedRooms.find(room =>
+          room.players.some(p => p.playerId === userId)
+        );
+      
+        if (room) {
+          console.log(`⚠️ Utente ${userId} disconnesso durante la partita nella stanza ${room.id}`);
+      
+          // Trova l'avversario
+          const opponent = room.players.find(p => p.playerId !== userId);
+          const opponentUser = users.find(u => u.userId === opponent?.playerId);
+      
+          if (opponent && opponentUser) {
+            // 💥 Diamo la vittoria all'avversario (solo se non è un bot)
+            const winnerId = opponent.playerId;
+            const loserId = userId;
+      
+            if (!String(winnerId).startsWith("bot_")) {
+              await pool.query(`UPDATE users SET rank = rank + 100 WHERE id = $1`, [winnerId]);
+            }
+            if (!String(loserId).startsWith("bot_")) {
+              await pool.query(`UPDATE users SET rank = rank - 50 WHERE id = $1`, [loserId]);
+            }
+      
+            io.to(opponentUser.socketId).emit('rankedMatchResult', {
+              result: 'win',
+              correctAnswers: 0,
+              totalTime: 0,
+              pointsChange: 100,
+              points: (await getUserRank(winnerId)) // funzione helper per ottenere rank aggiornato
+            });
+      
+            opponentUser.status = 'online';
+            updateFriendsStatus(winnerId, 'online');
+            updateFriendsStatus(userId, "offline");
+
+          }
+      
+          // 🧹 Rimuovi la stanza
+          clearTimeout(pendingTimeouts.get(userId)?.expandTimeout);
+clearTimeout(pendingTimeouts.get(userId)?.botTimeout);
+pendingTimeouts.delete(userId);
+
+          rankedRooms = rankedRooms.filter(r => r.id !== room.id);
+          console.log(`🗑️ Stanza ${room.id} rimossa causa disconnessione`);
+        }
+
+    });
+    socket.on('leaveQueue', ({ userId }) => {
+        console.log(`👋 [SERVER] Utente ${userId} ha lasciato la coda.`);
+    
+        rankedQueue = rankedQueue.filter(player => player.userId !== userId);
+    });
+    
 
 
     socket.on('getRoom', (roomId) => {
@@ -850,6 +914,10 @@ app.post('/subscribe', async (req, res) => {
     }
 });
 
+async function getUserRank(userId) {
+    const { rows } = await pool.query(`SELECT rank FROM users WHERE id = $1`, [userId]);
+    return rows[0]?.rank ?? 0;
+  }
 
 function sendPushNotification(subscription, title, body) {
     webpush.sendNotification(subscription, JSON.stringify({ title, body }))
@@ -929,6 +997,9 @@ function tryMatch() {
             const player1 = rankedQueue[i];
             const player2 = rankedQueue[j];
 
+            // 🔒 Previeni match con se stessi
+            if (player1.userId === player2.userId) continue;
+
             if (Math.abs(player1.rank - player2.rank) <= 200) {
                 const roomId = `ranked_${Date.now()}`;
 
@@ -944,29 +1015,42 @@ function tryMatch() {
                     status: 'playing'
                 });
 
-                io.to(users.find(u => u.userId === player1.userId)?.socketId).emit('rankedMatchFound', {
+                const socket1 = users.find(u => u.userId === player1.userId)?.socketId;
+                const socket2 = users.find(u => u.userId === player2.userId)?.socketId;
+
+                io.to(socket1).emit('rankedMatchFound', {
                     roomId,
-                    players: [{ playerId: player1.userId, rank: player1.rank, username: player1.username }, { playerId: player2.userId, rank: player2.rank, username: player2.username }],
+                    players: [
+                        { playerId: player1.userId, rank: player1.rank, username: player1.username },
+                        { playerId: player2.userId, rank: player2.rank, username: player2.username }
+                    ],
                     settings: { questionCount: 10, timePerQuestion: 15, category: "Random" }
                 });
 
-                io.to(users.find(u => u.userId === player2.userId)?.socketId).emit('rankedMatchFound', {
+                io.to(socket2).emit('rankedMatchFound', {
                     roomId,
-                    players: [{ playerId: player1.userId, rank: player1.rank, username: player1.username }, { playerId: player2.userId, rank: player2.rank, username: player2.username }],
+                    players: [
+                        { playerId: player1.userId, rank: player1.rank, username: player1.username },
+                        { playerId: player2.userId, rank: player2.rank, username: player2.username }
+                    ],
                     settings: { questionCount: 10, timePerQuestion: 15, category: "Random" }
                 });
+
+                // ✅ Aggiorna stato amici per entrambi i player
+                updateFriendsStatus(player1.userId, "playing");
+                updateFriendsStatus(player2.userId, "playing");
 
                 // ✅ Rimuoviamo i due giocatori dalla coda
-                rankedQueue = rankedQueue.filter(p => p.userId !== player1.userId && p.userId !== player2.userId);
+                rankedQueue = rankedQueue.filter(p =>
+                    p.userId !== player1.userId && p.userId !== player2.userId
+                );
 
                 // ✅ Annulliamo i timeout
-                clearTimeout(pendingTimeouts.get(player1.userId)?.expandTimeout);
-                clearTimeout(pendingTimeouts.get(player1.userId)?.botTimeout);
-                pendingTimeouts.delete(player1.userId);
-
-                clearTimeout(pendingTimeouts.get(player2.userId)?.expandTimeout);
-                clearTimeout(pendingTimeouts.get(player2.userId)?.botTimeout);
-                pendingTimeouts.delete(player2.userId);
+                [player1.userId, player2.userId].forEach(uid => {
+                    clearTimeout(pendingTimeouts.get(uid)?.expandTimeout);
+                    clearTimeout(pendingTimeouts.get(uid)?.botTimeout);
+                    pendingTimeouts.delete(uid);
+                });
 
                 // ✅ Ricontrolliamo la coda in caso ci siano altri match disponibili
                 tryMatch();
