@@ -66,7 +66,25 @@ io.on('connection', (socket) => {
         console.log(`✅ User ${userId} connesso con socket ${socket.id}`);
     });
 
+    socket.on('deleteUser', async (data) => {
+        const userId = Number(data.userId);
+        if (isNaN(userId)) {
+            socket.emit('deleteUserResponse', { success: false, message: 'Invalid userId' });
+            return;
+        }
 
+        try {
+            await deleteUserFromDB(userId);
+
+            // Rimuovi l'utente dalla lista in memoria
+            users = users.filter(u => u.userId !== userId);
+
+            socket.emit('deleteUserResponse', { success: true, message: 'User deleted successfully' });
+            socket.disconnect(true);
+        } catch (err) {
+            socket.emit('deleteUserResponse', { success: false, message: 'Error deleting user from DB' });
+        }
+    });
 
     socket.on('pong', () => {
         const user = users.find(u => u.socketId === socket.id);
@@ -1060,6 +1078,20 @@ function tryMatch() {
         }
     }
 }
+
+const deleteUserFromDB = async (userId) => {
+    // Esempio con PostgreSQL (adatta al tuo DB)
+    try {
+        await db.query('DELETE FROM users WHERE id = $1', [userId]);
+        await db.query('DELETE FROM friends WHERE user_id1 = $1 OR user_id2 = $1', [userId]);
+        await db.query('DELETE FROM ranked_results WHERE user_id = $1', [userId]);
+        await db.query('DELETE FROM game_results WHERE user_id = $1', [userId]);
+        console.log(`✅ Utente ${userId} eliminato dal database`);
+    } catch (err) {
+        console.error(`❌ Errore durante l'eliminazione dal DB per utente ${userId}:`, err);
+        throw err;
+    }
+};  
 
 
 async function updateFriendsStatus(userId, status) {
